@@ -14,9 +14,9 @@
           <button
             @click="toggleMode"
             class="px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all"
-            :class="store.isMockMode ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'"
+            :class="store.is_mock_mode ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'"
           >
-            {{ store.modeLabel }}
+            {{ store.mode_label }}
           </button>
           <button
             @click="showAddModal = true"
@@ -33,43 +33,21 @@
         <div
           v-if="showModeToast"
           class="mb-4 px-4 py-2 rounded-xl text-sm font-medium text-center"
-          :class="store.isMockMode ? 'bg-yellow-500/20 text-yellow-400' : 'bg-blue-500/20 text-blue-400'"
+          :class="store.is_mock_mode ? 'bg-yellow-500/20 text-yellow-400' : 'bg-blue-500/20 text-blue-400'"
         >
-          {{ store.isMockMode ? 'MOCK 模式已启用' : 'API 模式已启用' }}
+          {{ store.is_mock_mode ? 'MOCK 模式已启用' : 'API 模式已启用' }}
         </div>
       </Transition>
 
       <div class="mb-6">
         <CalendarGrid
-          :marked-dates="store.markedDates"
+          :marked-dates="store.marked_dates"
           @select="handleDateSelect"
         />
       </div>
 
       <div>
-        <BountyList :tasks="store.todayTasks" />
-      </div>
-
-      <div class="mt-8 pt-6 border-t border-white/5">
-        <h3 class="text-neutral-500 text-xs font-medium uppercase tracking-wider mb-3">数据嗅探测试</h3>
-        <div class="flex gap-2">
-          <input
-            v-model="sniffText"
-            type="text"
-            placeholder="输入日程文本测试解析..."
-            class="flex-1 bg-neutral-900 text-white text-sm rounded-lg px-3 py-2.5 border border-white/10 focus:border-green-500/50 outline-none"
-            @keyup.enter="handleSniff"
-          />
-          <button
-            @click="handleSniff"
-            class="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-white text-sm rounded-lg transition-colors"
-          >
-            解析
-          </button>
-        </div>
-        <p v-if="store.capturedText" class="text-neutral-500 text-xs mt-2">
-          最近捕获: {{ store.capturedText }}
-        </p>
+        <BountyList :tasks="store.today_tasks" />
       </div>
     </main>
 
@@ -82,7 +60,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useTaskStore } from '@/stores/useTaskStore'
 import ScheduleIsland from './Island/ScheduleIsland.vue'
 import CalendarGrid from './CalendarGrid.vue'
@@ -91,11 +69,10 @@ import AddTaskModal from './AddTaskModal.vue'
 
 const store = useTaskStore()
 const showAddModal = ref(false)
-const sniffText = ref('')
 const showModeToast = ref(false)
 
 function toggleMode() {
-  store.toggleMockMode()
+  store.toggle_mock_mode()
   showModeToast.value = true
   setTimeout(() => {
     showModeToast.value = false
@@ -110,14 +87,19 @@ function handleTaskAdded(task) {
   console.log('Task added:', task)
 }
 
-async function handleSniff() {
-  if (!sniffText.value.trim()) return
-  await store.sniffingHandler(sniffText.value)
-  sniffText.value = ''
+function handleNativeSniff(sourceText, inputType = 'manual') {
+  return store.handle_native_sniff(sourceText, inputType)
 }
 
 onMounted(() => {
-  store.fetchLatestTasks()
+  window.handleNativeSniff = handleNativeSniff
+  store.fetch_latest_tasks()
+})
+
+onUnmounted(() => {
+  if (window.handleNativeSniff === handleNativeSniff) {
+    delete window.handleNativeSniff
+  }
 })
 </script>
 
