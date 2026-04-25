@@ -110,6 +110,6 @@ function getDifficultyLabel(task) {
 
 function trackTask(task) {
   store.setActiveTask(task)
-  store.islandState = 'tracking'
+  store.island_state = 'tracking'
 }
 </script>

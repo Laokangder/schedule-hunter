@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center justify-center">
+  <div class="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] flex items-center justify-center">
     <Transition
       name="island"
       mode="out-in"
@@ -124,11 +124,11 @@ import { useTaskStore } from '@/stores/useTaskStore'
 
 const store = useTaskStore()
 
-const isIdle = computed(() => store.islandState === 'idle')
-const isTracking = computed(() => store.islandState === 'tracking')
-const isWarning = computed(() => store.islandState === 'warning')
-const isReminder = computed(() => store.islandState === 'reminder')
-const activeTask = computed(() => store.activeTask)
+const isIdle = computed(() => store.island_state === 'idle')
+const isTracking = computed(() => store.island_state === 'tracking')
+const isWarning = computed(() => store.island_state === 'warning')
+const isReminder = computed(() => store.island_state === 'reminder')
+const activeTask = computed(() => store.active_task)
 
 const taskIcon = computed(() => {
   if (!activeTask.value) return '📅'
@@ -165,7 +165,7 @@ const urgencyClass = computed(() => {
 })
 
 const conflictMessage = computed(() => {
-  return store.conflictDetail || '检测到日程冲突，请确认是否继续'
+  return store.conflict_detail || '检测到日程冲突，请确认是否继续'
 })
 
 const formatTime = (isoString) => {
@@ -184,18 +184,16 @@ const handleTrackingClick = () => {
 }
 
 const handleDismiss = () => {
-  store.isConflict = false
-  store.islandState = 'idle'
+  store.clearActiveTask()
 }
 
 const handleReschedule = () => {
-  store.isConflict = false
-  store.islandState = 'idle'
+  store.clearActiveTask()
 }
 
 const handleConfirmAnyway = () => {
-  store.isConflict = false
-  store.islandState = 'tracking'
+  store.is_conflict = false
+  store.island_state = 'tracking'
 }
 
 const handleCancel = () => {
@@ -206,16 +204,16 @@ const handlePostpone = () => {
   if (activeTask.value?.start_time) {
     const newStart = new Date(new Date(activeTask.value.start_time).getTime() + 15 * 60000)
     const newEnd = new Date(new Date(activeTask.value.end_time).getTime() + 15 * 60000)
-    store.activeTask = {
+    store.setActiveTask({
       ...activeTask.value,
       start_time: newStart.toISOString(),
       end_time: newEnd.toISOString()
-    }
+    })
   }
 }
 
-const handleConfirm = () => {
-  store.islandState = 'idle'
+const handleConfirm = async () => {
+  await store.create_task_from_active()
 }
 </script>
 

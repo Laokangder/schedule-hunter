@@ -61,7 +61,10 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
+import { useTaskStore } from '@/stores/useTaskStore'
+
+const store = useTaskStore()
 
 const props = defineProps({
   markedDates: {
@@ -69,8 +72,6 @@ const props = defineProps({
     default: () => []
   }
 })
-
-const emit = defineEmits(['select'])
 
 const locale = 'zh'
 const weekDays = {
@@ -80,7 +81,6 @@ const weekDays = {
 const today = new Date()
 const year = ref(today.getFullYear())
 const month = ref(today.getMonth())
-const selectedDate = ref(today.getDate())
 
 const calendarDays = computed(() => {
   const firstDay = new Date(year.value, month.value, 1).getDay()
@@ -125,10 +125,8 @@ function isToday(day) {
 }
 
 function isSelected(day) {
-  return (
-    day === selectedDate.value &&
-    isToday(day)
-  )
+  const dateStr = `${year.value}-${String(month.value + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  return dateStr === store.selected_date
 }
 
 function hasTask(day) {
@@ -137,10 +135,7 @@ function hasTask(day) {
 }
 
 function selectDate(day) {
-  selectedDate.value = day
   const dateStr = `${year.value}-${String(month.value + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-  emit('select', dateStr)
+  store.setSelectedDate(dateStr)
 }
-
-watch(() => props.markedDates, () => {}, { deep: true })
 </script>

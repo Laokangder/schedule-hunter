@@ -1,10 +1,9 @@
 import { defineStore } from 'pinia'
 import * as apiService from '@/services/apiService'
-import * as mockProvider from '@/services/mockProvider'
 
 export const useTaskStore = defineStore('task', {
   state: () => ({
-    is_mock_mode: true,
+    is_mock_mode: false,
     active_task: null,
     pending_task: null,
     is_conflict: false,
@@ -26,7 +25,8 @@ export const useTaskStore = defineStore('task', {
     reminder_threshold: 30 * 60 * 1000,
     _timer_id: null,
     _disconnected: false,
-    _native_handlers: []
+    _native_handlers: [],
+    selected_date: new Date().toISOString().split('T')[0]
   }),
 
   getters: {
@@ -36,21 +36,22 @@ export const useTaskStore = defineStore('task', {
     is_warning: (state) => state.island_state === 'warning',
     is_ambiguous: (state) => state.needs_confirmation && state.island_state === 'idle',
     current_task: (state) => state.active_task,
-    mode_label: (state) => state.is_mock_mode ? 'MOCK' : 'API',
     warning_severity: (state) => {
       if (state.conflict_level === 'high') return 'critical'
       if (state.conflict_level === 'medium') return 'warning'
       return 'info'
     },
     today_tasks: (state) => {
-      const today = new Date().toISOString().split('T')[0]
-      return state.tasks.filter(task => {
+      const tasks = state.tasks || []
+      const selected = state.selected_date || new Date().toISOString().split('T')[0]
+      return tasks.filter(task => {
         const task_date = task.start_time?.split('T')[0]
-        return task_date === today
+        return task_date === selected
       })
     },
     marked_dates: (state) => {
-      const dates = state.tasks.map(task => task.start_time?.split('T')[0])
+      const tasks = state.tasks || []
+      const dates = tasks.map(task => task.start_time?.split('T')[0])
       return [...new Set(dates.filter(Boolean))]
     }
   },
@@ -100,21 +101,21 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
-    async fetch_latest_tasks(date = null) {
+    setSelectedDate(date) {
+      this.selected_date = date
+      this.fetch_latest_tasks()
+    },
+
+    async fetch_latest_tasks() {
       this.is_loading = true
       this.error = null
 
       try {
-        let result
-        if (this.is_mock_mode) {
-          result = await mockProvider.mock_fetch_tasks(date)
-        } else {
-          result = await apiService.fetch_tasks(date)
-        }
+        const result = await apiService.fetch_tasks(this.selected_date)
 
         if (result.success && result.data) {
           const response_data = result.data.data || result.data
-          this.tasks = response_data.tasks || response_data || []
+          this.tasks = response_data.task_list || response_data.tasks || []
         } else {
           this.error = result.error
         }
@@ -129,49 +130,23 @@ export const useTaskStore = defineStore('task', {
       this.captured_text = raw_text
 
       try {
-        let result
-        if (this.is_mock_mode) {
-          const request_body = {
-            request_id: `req_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-            source_text: raw_text,
-            context: {
-              recent_tasks: this.tasks.slice(0, 5).map(t => ({
-                task_id: t.task_id || t.id,
-                title: t.title,
-                start_time: t.start_time,
-                end_time: t.end_time
-              })),
-              user_preferences: {
-                default_duration_minutes: 60,
-                timezone: 'Asia/Shanghai'
-              }
-            },
-            meta: {
-              input_type: input_type,
-              client_timestamp: new Date().toISOString(),
-              app_version: '1.0.0'
-            }
+        const context = {
+          recent_tasks: this.tasks.slice(0, 5).map(t => ({
+            task_id: t.task_id || t.id,
+            title: t.title,
+            start_time: t.start_time,
+            end_time: t.end_time
+          })),
+          user_preferences: {
+            default_duration_minutes: 60,
+            timezone: 'Asia/Shanghai'
           }
-          result = await mockProvider.mock_parse_text(request_body)
-        } else {
-          const context = {
-            recent_tasks: this.tasks.slice(0, 5).map(t => ({
-              task_id: t.task_id || t.id,
-              title: t.title,
-              start_time: t.start_time,
-              end_time: t.end_time
-            })),
-            user_preferences: {
-              default_duration_minutes: 60,
-              timezone: 'Asia/Shanghai'
-            }
-          }
-          const meta = {
-            input_type: input_type,
-            app_version: '1.0.0'
-          }
-          result = await apiService.parse_task(raw_text, context, meta)
         }
+        const meta = {
+          input_type: input_type,
+          app_version: '1.0.0'
+        }
+        const result = await apiService.parse_task(raw_text, context, meta)
 
         this.last_response = result
 
@@ -288,8 +263,55 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
-    handle_native_sniff(source_text, input_type = 'manual') {
-      return this.sniffing_handler(source_text, input_type)
+    async handle_native_sniff(source_text, input_type = 'manual') {
+      if (!source_text || !source_text.trim()) return
+      this.captured_text = source_text
+      this.is_loading = true
+      this.error = null
+
+      try {
+        const meta = {
+          input_type: input_type,
+          app_version: '1.0.0'
+        }
+        const result = await apiService.parse_task(source_text, {}, meta)
+
+        if (result.success && result.data) {
+          if (result.data.code === 0) {
+            console.log('🔥 [DEBUG] 准备激活灵动岛，数据:', result.data)
+
+            const raw_data = result.data.data?.parsed || result.data.data || result.data
+
+            this.active_task = raw_data
+            this.is_conflict = !!raw_data.is_conflict
+            this.island_state = 'reminder'
+
+            if (raw_data.is_conflict) {
+              this.island_state = 'warning'
+              if (raw_data.conflict) {
+                this.conflict_detail = raw_data.conflict.detail || ''
+                this.conflict_type = raw_data.conflict.conflict_type || null
+                this.conflict_level = raw_data.conflict.conflict_level || 'medium'
+              }
+            }
+
+            return { success: true, data: raw_data }
+          } else {
+            this.error = result.data.message || 'Parse failed'
+            return { success: false, error: this.error }
+          }
+        } else {
+          console.error('❌ [STORE ERROR]:', result.error)
+          this.error = result.error
+          return { success: false, error: result.error }
+        }
+      } catch (error) {
+        console.error('❌ [STORE ERROR]:', error)
+        this.error = error.message
+        return { success: false, error: error.message }
+      } finally {
+        this.is_loading = false
+      }
     },
 
     set_active_task(task) {
@@ -327,6 +349,14 @@ export const useTaskStore = defineStore('task', {
       this._stop_reminder_timer()
     },
 
+    clearActiveTask() {
+      this.clear_active_task()
+    },
+
+    setActiveTask(task) {
+      this.set_active_task(task)
+    },
+
     apply_suggestion(suggestion) {
       if (!suggestion || !this.pending_task) return
 
@@ -362,12 +392,7 @@ export const useTaskStore = defineStore('task', {
 
     async check_task_conflict(task) {
       try {
-        let result
-        if (this.is_mock_mode) {
-          result = await mockProvider.mock_check_conflict(task.candidate || task, {})
-        } else {
-          result = await apiService.check_conflict(task.candidate || task, {})
-        }
+        const result = await apiService.check_conflict(task.candidate || task, {})
 
         if (result.success && result.data) {
           const response_data = result.data.data || result.data
@@ -392,6 +417,48 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
+    async create_task_from_active() {
+      if (!this.active_task) return null
+
+      const task_data = {
+        source_text: this.captured_text || '',
+        parsed: {
+          title: this.active_task.title,
+          start_time: this.active_task.start_time,
+          end_time: this.active_task.end_time,
+          location: this.active_task.location,
+          participants: this.active_task.participants || [],
+          timezone: this.active_task.timezone || 'Asia/Shanghai'
+        },
+        priority: 'normal',
+        meta: {
+          input_type: 'manual',
+          language: 'zh-CN'
+        }
+      }
+
+      try {
+        const result = await apiService.create_task(task_data)
+
+        if (result.success && result.data) {
+          const response_data = result.data.data || result.data
+          const created_task = {
+            ...this.active_task,
+            task_id: response_data.task_id,
+            status: response_data.status || 'scheduled'
+          }
+          this.tasks.push(created_task)
+          this.clear_active_task()
+          this.fetch_latest_tasks()
+          return created_task
+        }
+        return null
+      } catch (error) {
+        this.error = error.message
+        return null
+      }
+    },
+
     async create_task_from_pending() {
       if (!this.pending_task) return null
 
@@ -413,12 +480,7 @@ export const useTaskStore = defineStore('task', {
       }
 
       try {
-        let result
-        if (this.is_mock_mode) {
-          result = await mockProvider.mock_create_task(task_data)
-        } else {
-          result = await apiService.create_task(task_data)
-        }
+        const result = await apiService.create_task(task_data)
 
         if (result.success && result.data) {
           const response_data = result.data.data || result.data
@@ -473,11 +535,8 @@ export const useTaskStore = defineStore('task', {
         this.ws.close()
       }
 
-      const api_host = import.meta.env.VITE_API_HOST || '127.0.0.1:8000'
-      const ws_url = `ws://${api_host}/ws/tasks`
-
       try {
-        this.ws = new WebSocket(ws_url)
+        this.ws = new WebSocket('ws://' + window.location.host + '/ws/tasks')
 
         this.ws.onmessage = (event) => {
           try {

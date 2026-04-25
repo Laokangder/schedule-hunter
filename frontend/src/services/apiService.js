@@ -1,5 +1,3 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
-
 function generate_request_id() {
   const now = new Date()
   const date_str = now.toISOString().slice(0, 10).replace(/-/g, '')
@@ -21,7 +19,8 @@ async function request(url, options = {}) {
     }
   }
 
-  const response = await fetch(`${API_BASE_URL}${url}`, {
+  console.log('📡 [NETWORK] 请求:', url, options.method || 'GET')
+  const response = await fetch(url, {
     ...default_options,
     ...options
   })
@@ -31,7 +30,9 @@ async function request(url, options = {}) {
     throw new Error(error_data.detail || `HTTP ${response.status}`)
   }
 
-  return response.json()
+  const json = await response.json()
+  console.log('📡 [NETWORK] 响应:', url, response.status, json)
+  return json
 }
 
 export async function parse_task(source_text, context = {}, meta = {}) {
