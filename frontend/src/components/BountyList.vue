@@ -16,21 +16,42 @@
       <div
         v-for="task in tasks"
         :key="task.id"
-        @click="trackTask(task)"
+        @click="!isExpired(task) && trackTask(task)"
         class="bg-neutral-800/50 rounded-xl p-3 border border-white/5 hover:border-green-500/30 transition-all cursor-pointer group"
+        :class="{ 'opacity-50': isCompleted(task) }"
       >
         <div class="flex items-start gap-3">
+          <input
+            type="checkbox"
+            :checked="isCompleted(task)"
+            :disabled="isExpired(task)"
+            @click.stop="toggleStatus(task)"
+            class="w-5 h-5 rounded border-neutral-600 bg-neutral-700 text-green-500 focus:ring-green-500 focus:ring-offset-0 cursor-pointer mt-1"
+          />
+
           <div
-            class="w-10 h-10 rounded-lg flex items-center justify-center font-mono text-sm flex-shrink-0"
+            class="w-10 h-10 rounded-lg flex items-center justify-center font-mono text-xs flex-shrink-0"
             :class="getTimeSlotClass(task)"
           >
-            {{ formatTime(task.start_time) }}
+            {{ formatRelativeTime(task.start_time) }}
           </div>
 
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 mb-1">
-              <h4 class="text-white font-medium text-sm truncate">{{ task.title }}</h4>
+              <h4
+                class="text-white font-medium text-sm truncate"
+                :class="{ 'line-through text-neutral-500': isCompleted(task) }"
+              >
+                {{ task.title }}
+              </h4>
               <span
+                v-if="isExpired(task)"
+                class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0 bg-red-500/20 text-red-400"
+              >
+                已过期
+              </span>
+              <span
+                v-else
                 class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0"
                 :class="getDifficultyClass(task)"
               >
@@ -52,6 +73,16 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
             </svg>
           </div>
+
+          <button
+            @click.stop="deleteTask(task)"
+            class="w-6 h-6 rounded-full bg-red-500/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/30"
+            title="删除任务"
+          >
+            <svg class="w-3 h-3 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v1M8 5h8" />
+            </svg>
+          </button>
         </div>
       </div>
     </div>
@@ -71,10 +102,23 @@ const props = defineProps({
 
 const store = useTaskStore()
 
-function formatTime(isoString) {
+function formatRelativeTime(isoString) {
   if (!isoString) return '--:--'
+  const now = new Date()
   const date = new Date(isoString)
-  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const tomorrow = new Date(today.getTime() + 86400000)
+  const taskDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+
+  if (taskDate.getTime() === today.getTime()) {
+    return `今天${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  } else if (taskDate.getTime() === tomorrow.getTime()) {
+    return `明天${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  } else {
+    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+    const dayLabel = weekdays[date.getDay()]
+    return `${dayLabel}${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  }
 }
 
 function getTimeSlotClass(task) {
@@ -108,8 +152,39 @@ function getDifficultyLabel(task) {
   return '正常'
 }
 
+function isCompleted(task) {
+  return task.status === 'completed'
+}
+
+function isExpired(task) {
+  if (task.status === 'expired') return true
+  if (!task.start_time) return false
+  const now = Date.now()
+  const startTime = new Date(task.start_time).getTime()
+  const endTime = task.end_time ? new Date(task.end_time).getTime() : startTime + 3600000
+  return endTime < now
+}
+
 function trackTask(task) {
-  store.setActiveTask(task)
-  store.island_state = 'tracking'
+  store.active_task = task
+  store.island_state = 'detail'
+}
+
+async function toggleStatus(task) {
+  await store.toggleTaskStatus(task)
+}
+
+async function deleteTask(task) {
+  if (!confirm(`确定要删除任务"${task.title}"吗？`)) {
+    return
+  }
+  try {
+    const result = await store.delete_task(task.task_id || task.id)
+    if (result) {
+      console.log('✅ 任务删除成功')
+    }
+  } catch (error) {
+    console.error('❌ 删除失败:', error)
+  }
 }
 </script>

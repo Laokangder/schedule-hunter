@@ -1,70 +1,105 @@
+import httpx
 import json
 import re
+import os
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Optional
-import httpx
+from typing import Dict
+from src.core.config import settings
+from src.core.logger import get_logger
+
+logger = get_logger("llm_service")
 
 
-class BlueLMService:
+class LLMService:
     def __init__(self):
-        raw_base = "https://api.deepseek.com/v1"
-        if not raw_base.startswith(("http://", "https://")):
-            raw_base = "https://" + raw_base
-        self.api_base = raw_base
-        self.model = "deepseek-v4-flash"
-        self.api_key = "sk-09d9dadd8eab4bb18c59b11e772fcf83"
-        self.timeout = 30.0
+        self.api_key = settings.LLM_API_KEY or os.getenv("LLM_API_KEY") or settings.BLUELM_API_KEY
+        self.api_url = settings.LLM_API_URL or os.getenv("LLM_API_URL") or settings.BLUELM_API_URL
+        self.model = settings.LLM_MODEL
         self.default_duration_minutes = 60
+        self.timeout = 15.0
 
-    def _build_prompt(self, source_text: str) -> list:
-        now = datetime.now(timezone(timedelta(hours=8)))
-        system_prompt = (
-            "你是一个极度精准的日程意图提取助手。"
-            f"当前系统时间：{now.isoformat()}。"
-            "从用户的口语化文本中，提取出title（任务标题——必须去除地点、人物、冗余修饰词，只保留核心动名词，如\"吃饭\"\"谈合作\"\"开会\"）、"
-            "start_time（开始时间，必须为ISO 8601格式，"
-            "结合当前系统时间进行相对时间计算推演）、end_time（结束时间，ISO 8601格式）、"
-            "location（地点——遇到\"在...\"\"去...\"\"到...\"等字眼必须提取为location，没有则设为null）、"
-            "confidence（置信度0.0-1.0）。"
-            "示例1：输入\"明天下午3点去望京SOHO找张总谈合作\" 输出{\"title\":\"谈合作\",\"start_time\":\"2026-04-26T15:00:00+08:00\",\"end_time\":\"2026-04-26T16:00:00+08:00\",\"location\":\"望京SOHO\",\"confidence\":0.95}"
-            "示例2：输入\"在和平饭店吃饭\" 输出{\"title\":\"吃饭\",\"start_time\":\"2026-04-25T12:00:00+08:00\",\"end_time\":\"2026-04-25T13:00:00+08:00\",\"location\":\"和平饭店\",\"confidence\":0.95}"
-            "绝对不要输出任何markdown标记、思考过程或解释性文字。"
-            "仅输出JSON字符串，格式："
-            '{"title":"...","start_time":"...","end_time":"...","location":null或"...","confidence":0.0-1.0}'
-        )
-        return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": source_text}
-        ]
+    async def parse_task(self, source_text: str, context: Dict = None, trace_id: str = "") -> Dict:
+        try:
+            return await self._call_llm_api(source_text)
+        except TimeoutError:
+            logger.warning(f"LLM API timeout: {source_text[:50]}")
+            result = self._fallback_parse(source_text)
+            result["ai_fallback"] = True
+            return result
+        except Exception as e:
+            logger.error(f"LLM API error: {str(e)}")
+            result = self._fallback_parse(source_text)
+            result["ai_fallback"] = True
+            return result
 
-    async def parse_task(self, source_text: str, trace_id: str, context: Dict = {}) -> Optional[Dict]:
-        messages = self._build_prompt(source_text)
+    async def _call_llm_api(self, source_text: str) -> Dict:
+        current_date = datetime.now().strftime('%Y-%m-%d')
+
+        system_prompt = f"""你是一个精确的时间提取助手。
+
+【系统基准日期】{current_date}
+
+【核心规则】
+1. 日期锚定：若用户未提及具体日期词汇（"明天"、"后天"、"28号"等），一律使用基准日期 {current_date}
+2. 时间绝对忠诚：用户输入的时间必须原样提取并转为24小时制，绝不擅自修改
+3. 禁止猜测：若用户未提供时间，设置 needs_confirmation=true，不擅自填充
+
+【必须严格遵循的JSON格式】
+{{
+  "title": "事件名称",
+  "start_time": "YYYY-MM-DDTHH:MM:SS+08:00",
+  "end_time": "YYYY-MM-DDTHH:MM:SS+08:00",
+  "confidence": 0.95,
+  "needs_confirmation": false,
+  "ambiguities": []
+}}
+
+【必须严格遵循的示例】
+
+示例1：
+输入：明天上午八点半开会
+必须输出：{{"title":"开会","start_time":"2026-04-29T08:30:00+08:00","end_time":"2026-04-29T09:30:00+08:00","confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
+
+示例2：
+输入：28日晚上七点吃饭
+必须输出：{{"title":"吃饭","start_time":"2026-04-28T19:00:00+08:00","end_time":"2026-04-28T20:00:00+08:00","confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
+
+示例3：
+输入：下午三点去跑步
+必须输出：{{"title":"去跑步","start_time":"{current_date}T15:00:00+08:00","end_time":"{current_date}T16:00:00+08:00","confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
+
+示例4：
+输入：洗澡
+必须输出：{{"title":"洗澡","start_time":null,"end_time":null,"confidence":0.3,"needs_confirmation":true,"ambiguities":["time"]}}
+
+请严格按上述JSON格式输出，不要添加任何其他文字。"""
+
+        user_prompt = f"解析以下日程：{source_text}"
+
         payload = {
             "model": self.model,
-            "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 512
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500
         }
 
-        endpoint = self.api_base.rstrip("/") + "/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                endpoint,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=payload
-            )
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+            response = await client.post(self.api_url, json=payload, headers=headers)
             response.raise_for_status()
-            response_data = response.json()
+            data = response.json()
 
-        raw_content = response_data["choices"][0]["message"]["content"]
-
-        print("\n" + "="*50 + "\n🔥 [DEBUG] 大模型原始返回内容开始:\n" + raw_content + "\n" + "="*50 + "\n")
-
-        raw_content = re.sub(r'<think>.*?</think>', '', raw_content, flags=re.DOTALL)
+        raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        raw_content = re.sub(r'^```json\s*', '', raw_content, flags=re.DOTALL)
+        raw_content = re.sub(r'^```\s*', '', raw_content, flags=re.DOTALL)
+        raw_content = re.sub(r'\s*```$', '', raw_content, flags=re.DOTALL)
         raw_content = raw_content.strip()
 
         start_idx = raw_content.find('{')
@@ -83,30 +118,30 @@ class BlueLMService:
             "start_time": parsed.get("start_time"),
             "end_time": parsed.get("end_time"),
             "location": parsed.get("location"),
-            "participants": [],
+            "participants": parsed.get("participants", []),
             "confidence": max(0.0, min(1.0, float(parsed.get("confidence", 0.5)))),
-            "ambiguities": []
+            "ambiguities": parsed.get("ambiguities", []),
+            "ai_fallback": False,
+            "needs_confirmation": not parsed.get("start_time") or not parsed.get("end_time")
         }
-
-        if not result["start_time"] or not result["end_time"]:
-            now = datetime.now(timezone(timedelta(hours=8)))
-            result["start_time"] = (now + timedelta(hours=1)).isoformat()
-            result["end_time"] = (now + timedelta(hours=1) + timedelta(minutes=self.default_duration_minutes)).isoformat()
-            result["confidence"] = 0.3
 
         return result
 
     def _fallback_parse(self, source_text: str) -> Dict:
-        now = datetime.now(timezone(timedelta(hours=8)))
-        start_time = now + timedelta(hours=1)
-        start_time = start_time.replace(second=0, microsecond=0)
-        end_time = start_time + timedelta(minutes=self.default_duration_minutes)
+        tz = timezone(timedelta(hours=8))
+        now = datetime.now(tz)
+        default_start = now + timedelta(hours=1)
+        if default_start.hour >= 23:
+            default_start = default_start.replace(hour=22, minute=59, second=59)
+        default_end = default_start + timedelta(minutes=self.default_duration_minutes)
         return {
             "title": source_text[:30] if source_text else "未识别任务",
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
+            "start_time": default_start.isoformat(),
+            "end_time": default_end.isoformat(),
             "location": None,
             "participants": [],
             "confidence": 0.1,
-            "ambiguities": []
+            "ambiguities": ["time"],
+            "ai_fallback": True,
+            "needs_confirmation": True
         }

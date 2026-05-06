@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException
 from typing import Optional
+from pydantic import BaseModel
 from src.models.request import ParseTaskRequest, CreateTaskRequest, ConflictCheckRequest
 from src.models.response import BaseResponse, ParseTaskResponseData, CreateTaskResponseData, ConflictCheckResponseData, \
     TaskListResponseData, ConflictItem, Suggestion, Ambiguity
@@ -7,6 +8,7 @@ from src.services.parse_service import ParseService
 from src.services.task_service import TaskService
 from src.services.conflict_service import ConflictService
 from src.core.logger import get_logger, log_with_trace
+import traceback
 
 router = APIRouter(tags=["task"])
 logger = get_logger("task_api")
@@ -16,6 +18,10 @@ task_service = TaskService()
 conflict_service = ConflictService()
 
 
+class UpdateStatusRequest(BaseModel):
+    status: str
+
+
 @router.post("/api/v1/task/parse")
 async def parse_task(request: Request, body: ParseTaskRequest):
     trace_id = request.state.trace_id
@@ -23,6 +29,8 @@ async def parse_task(request: Request, body: ParseTaskRequest):
         parsed_data = await parse_service.parse(body, trace_id)
         if not parsed_data:
             raise HTTPException(status_code=400, detail="解析失败（错误码1002）")
+
+        ai_fallback = parsed_data.get("ai_fallback", False)
 
         conflict_check = conflict_service.check_conflict(
             candidate=parsed_data,
@@ -61,8 +69,9 @@ async def parse_task(request: Request, body: ParseTaskRequest):
             is_conflict=conflict_check["has_conflict"],
             conflict=conflict_obj,
             suggestions=suggestion_objs,
-            needs_confirmation=parsed_data.get("confidence", 0) < 0.6,
-            ambiguities=processed_ambiguities
+            needs_confirmation=parsed_data.get("confidence", 0) < 0.6 or ai_fallback,
+            ambiguities=processed_ambiguities,
+            ai_fallback=ai_fallback
         )
 
         return BaseResponse(
@@ -77,7 +86,8 @@ async def parse_task(request: Request, body: ParseTaskRequest):
             return BaseResponse(code=1001, message="解析文本为空", data={}, trace_id=trace_id)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        log_with_trace(logger, "ERROR", f"解析接口异常：{repr(e)}", trace_id)
+        error_trace = traceback.format_exc()
+        log_with_trace(logger, "ERROR", f"解析接口异常：{repr(e)}\n{error_trace}", trace_id)
         return BaseResponse(code=5000, message="服务器内部错误", data={}, trace_id=trace_id)
 
 
@@ -144,3 +154,48 @@ async def conflict_check(request: Request, body: ConflictCheckRequest):
     except Exception as e:
         log_with_trace(logger, "ERROR", f"冲突检测异常：{repr(e)}", trace_id)
         return BaseResponse(code=2002, message="冲突检测失败", data={}, trace_id=trace_id)
+
+
+@router.delete("/api/v1/tasks/{task_id}")
+async def delete_task(request: Request, task_id: str):
+    """删除指定任务"""
+    trace_id = request.state.trace_id
+    try:
+        result = task_service.delete_task(task_id, trace_id)
+        if not result:
+            return BaseResponse(code=4001, message="任务不存在或已删除", data={}, trace_id=trace_id)
+
+        return BaseResponse(
+            code=0,
+            message="deleted",
+            data={"task_id": task_id},
+            trace_id=trace_id
+        )
+
+    except Exception as e:
+        log_with_trace(logger, "ERROR", f"删除任务异常：{repr(e)}", trace_id)
+        return BaseResponse(code=5000, message="服务器内部错误", data={}, trace_id=trace_id)
+
+
+@router.patch("/api/v1/tasks/{task_id}/status")
+async def update_task_status(request: Request, task_id: str, body: UpdateStatusRequest):
+    trace_id = request.state.trace_id
+    valid_statuses = ["pending", "completed", "expired"]
+    if body.status not in valid_statuses:
+        return BaseResponse(code=4002, message=f"无效状态：{body.status}", data={}, trace_id=trace_id)
+
+    try:
+        result = task_service.update_task_status(task_id, body.status)
+        if not result:
+            return BaseResponse(code=4001, message="任务不存在", data={}, trace_id=trace_id)
+
+        return BaseResponse(
+            code=0,
+            message="updated",
+            data={"task_id": task_id, "status": body.status},
+            trace_id=trace_id
+        )
+
+    except Exception as e:
+        log_with_trace(logger, "ERROR", f"更新状态异常：{repr(e)}", trace_id)
+        return BaseResponse(code=5000, message="服务器内部错误", data={}, trace_id=trace_id)

@@ -1,6 +1,19 @@
 import { defineStore } from 'pinia'
 import * as apiService from '@/services/apiService'
 
+// 错误码到中文消息的映射
+const ERROR_MESSAGES = {
+  1001: '解析文本为空，请输入日程内容',
+  1002: '无法识别时间，请补充具体时间',
+  1003: 'AI 不太确定，请核对信息',
+  2001: '任务时间无效，请检查时间是否合理',
+  2002: '冲突检测失败，已为您忽略冲突',
+  2003: '日程冲突严重，请调整时间或取消',
+  3001: '任务创建失败，请稍后重试',
+  4001: '任务不存在或已删除',
+  5000: '服务暂不可用，请稍后重试'
+}
+
 export const useTaskStore = defineStore('task', {
   state: () => ({
     is_mock_mode: false,
@@ -22,8 +35,10 @@ export const useTaskStore = defineStore('task', {
     ws: null,
     is_loading: false,
     error: null,
+    error_msg: '',
     reminder_threshold: 30 * 60 * 1000,
     _timer_id: null,
+    _poll_interval_id: null,
     _disconnected: false,
     _native_handlers: [],
     selected_date: new Date().toISOString().split('T')[0]
@@ -34,6 +49,7 @@ export const useTaskStore = defineStore('task', {
     is_tracking: (state) => state.island_state === 'tracking',
     is_reminder: (state) => state.island_state === 'reminder',
     is_warning: (state) => state.island_state === 'warning',
+    is_detail: (state) => state.island_state === 'detail',
     is_ambiguous: (state) => state.needs_confirmation && state.island_state === 'idle',
     current_task: (state) => state.active_task,
     warning_severity: (state) => {
@@ -53,6 +69,15 @@ export const useTaskStore = defineStore('task', {
       const tasks = state.tasks || []
       const dates = tasks.map(task => task.start_time?.split('T')[0])
       return [...new Set(dates.filter(Boolean))]
+    },
+    // 获取当前错误的中文消息
+    errorMessage: (state) => {
+      if (!state.error) return ''
+      const code = parseInt(state.error)
+      if (ERROR_MESSAGES[code]) {
+        return ERROR_MESSAGES[code]
+      }
+      return state.error
     }
   },
 
@@ -101,26 +126,49 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
+    _start_poll() {
+      if (this._poll_interval_id) return
+      this._poll_interval_id = setInterval(() => {
+        this.fetch_latest_tasks()
+      }, 60000)
+    },
+
+    _stop_poll() {
+      if (this._poll_interval_id) {
+        clearInterval(this._poll_interval_id)
+        this._poll_interval_id = null
+      }
+    },
+
     setSelectedDate(date) {
       this.selected_date = date
       this.fetch_latest_tasks()
+      this._start_poll()
     },
 
     async fetch_latest_tasks() {
       this.is_loading = true
       this.error = null
+      this.error_msg = ''
 
       try {
         const result = await apiService.fetch_tasks(this.selected_date)
 
         if (result.success && result.data) {
           const response_data = result.data.data || result.data
-          this.tasks = response_data.task_list || response_data.tasks || []
+          if (response_data.code && response_data.code !== 0) {
+            this.error = String(response_data.code)
+            this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '请求失败'
+          } else {
+            this.tasks = response_data.task_list || response_data.tasks || []
+          }
         } else {
           this.error = result.error
+          this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
         }
       } catch (error) {
         this.error = error.message
+        this.error_msg = ERROR_MESSAGES[parseInt(error.message)] || error.message
       } finally {
         this.is_loading = false
       }
@@ -160,6 +208,8 @@ export const useTaskStore = defineStore('task', {
             const suggestions = response_data.suggestions || []
             this.needs_confirmation = response_data.needs_confirmation || false
             this.ambiguities = response_data.ambiguities || []
+            this.error = null
+            this.error_msg = ''
 
             this.is_conflict = response_data.is_conflict || false
 
@@ -215,21 +265,24 @@ export const useTaskStore = defineStore('task', {
 
             return { success: true, data: response_data }
           } else {
-            this.error = response_data.message || 'Parse failed'
-            return { success: false, error: this.error }
+            this.error = String(response_data.code)
+            this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '解析失败'
+            return { success: false, error: this.error_msg }
           }
         } else {
           this.error = result.error
-          return { success: false, error: result.error }
+          this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
+          return { success: false, error: this.error_msg }
         }
       } catch (error) {
         this.error = error.message
-        return { success: false, error: error.message }
+        this.error_msg = ERROR_MESSAGES[parseInt(error.message)] || error.message
+        return { success: false, error: this.error_msg }
       }
     },
 
     _schedule_reminder(task) {
-      if (!task.start_time) return
+      if (!task?.start_time) return
 
       const now = Date.now()
       const start = new Date(task.start_time).getTime()
@@ -240,15 +293,13 @@ export const useTaskStore = defineStore('task', {
         this.pending_task = null
         this.island_state = 'reminder'
       } else if (diff <= this.reminder_threshold) {
-        this.pending_task = task
-        this.active_task = null
+        this.active_task = task
+        this.pending_task = null
         this.island_state = 'tracking'
-        this._start_reminder_timer()
       } else {
+        this.active_task = task
         this.pending_task = task
-        this.active_task = null
-        this.island_state = 'idle'
-        this._start_reminder_timer()
+        this.island_state = 'tracking'
       }
     },
 
@@ -541,7 +592,20 @@ export const useTaskStore = defineStore('task', {
         this.ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data)
-            if (data.type === 'schedule_sniff' && data.text) {
+            if (data.type === 'REMINDER') {
+              const task = this.tasks.find(t => t.task_id === data.task_id)
+              if (task) {
+                this.active_task = task
+                this.island_state = 'reminder'
+                this._show_reminder_toast(data.title)
+              } else {
+                this.active_task = { title: data.title, task_id: data.task_id }
+                this.island_state = 'reminder'
+              }
+              this.fetch_latest_tasks()
+            } else if (data.type === 'TASK_UPDATED') {
+              this.fetch_latest_tasks()
+            } else if (data.type === 'schedule_sniff' && data.text) {
               this.sniffing_handler(data.text, data.input_type || 'notification')
             } else if (data.type === 'reminder_triggered' && data.task_id) {
               const task = this.tasks.find(t => t.task_id === data.task_id)
@@ -579,6 +643,12 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
+    _show_reminder_toast(title) {
+      if (typeof window !== 'undefined' && window.showToast) {
+        window.showToast(`任务提醒: ${title}`)
+      }
+    },
+
     disconnect_web_socket() {
       this._disconnected = true
       if (this.ws) {
@@ -586,6 +656,75 @@ export const useTaskStore = defineStore('task', {
         this.ws = null
       }
       this._stop_reminder_timer()
+      this._stop_poll()
+    },
+
+    async delete_task(task_id) {
+      try {
+        const result = await apiService.delete_task(task_id)
+        if (result.success && result.data) {
+          const response_data = result.data.data || result.data
+          if (response_data.code === 0) {
+            const idx = this.tasks.findIndex(t => t.task_id === task_id)
+            if (idx > -1) this.tasks.splice(idx, 1)
+            this.error = null
+            this.error_msg = ''
+            return true
+          }
+          this.error = String(response_data.code)
+          this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '删除失败'
+          return false
+        }
+        this.error = result.error
+        this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
+        return false
+      } catch (error) {
+        this.error = error.message
+        this.error_msg = ERROR_MESSAGES[parseInt(error.message)] || error.message
+        return false
+      }
+    },
+
+    async toggleTaskStatus(task) {
+      const task_id = task.task_id || task.id
+      const currentStatus = task.status || 'pending'
+      if (currentStatus === 'expired') return false
+
+      const newStatus = currentStatus === 'completed' ? 'pending' : 'completed'
+
+      const idx = this.tasks.findIndex(t => (t.task_id || t.id) === task_id)
+      if (idx > -1) {
+        this.tasks[idx] = { ...this.tasks[idx], status: newStatus }
+      }
+
+      try {
+        const result = await apiService.update_task_status(task_id, newStatus)
+        if (result.success && result.data) {
+          const response_data = result.data.data || result.data
+          if (response_data.code === 0) {
+            return true
+          }
+          if (idx > -1) {
+            this.tasks[idx] = { ...this.tasks[idx], status: currentStatus }
+          }
+          this.error = String(response_data.code)
+          this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '状态更新失败'
+          return false
+        }
+        if (idx > -1) {
+          this.tasks[idx] = { ...this.tasks[idx], status: currentStatus }
+        }
+        this.error = result.error
+        this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
+        return false
+      } catch (error) {
+        if (idx > -1) {
+          this.tasks[idx] = { ...this.tasks[idx], status: currentStatus }
+        }
+        this.error = error.message
+        this.error_msg = ERROR_MESSAGES[parseInt(error.message)] || error.message
+        return false
+      }
     }
   }
 })

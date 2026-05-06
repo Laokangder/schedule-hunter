@@ -12,14 +12,28 @@ class TaskService:
         self.task_repo = TaskRepository()
 
     def create_task(self, request: CreateTaskRequest, trace_id: str) -> Dict:
-        """创建任务"""
+        request_id = getattr(request, 'request_id', None)
+        if request_id:
+            existing = self.task_repo.get_task_by_request_id(request_id)
+            if existing:
+                log_with_trace(logger, "INFO", f"幂等返回：request_id={request_id}", trace_id)
+                return {
+                    "task_id": existing["task_id"],
+                    "status": existing["status"],
+                    "normalized": {
+                        "start_time": existing["start_time"],
+                        "end_time": existing["end_time"]
+                    },
+                    "is_conflict": False,
+                    "idempotent": True
+                }
+
         try:
-            # 生成任务ID
             task_id = f"task_{uuid.uuid4().hex[:6]}"
 
-            # 构建任务数据
             task_data = {
                 "task_id": task_id,
+                "request_id": request_id,
                 "title": request.parsed.title,
                 "start_time": request.parsed.start_time,
                 "end_time": request.parsed.end_time,
@@ -33,7 +47,6 @@ class TaskService:
                 "created_at": request.meta.client_timestamp
             }
 
-            # 写入数据库
             self.task_repo.create_task(task_data, trace_id)
             log_with_trace(logger, "INFO", f"任务创建成功：{task_id}", trace_id)
 
@@ -44,7 +57,8 @@ class TaskService:
                     "start_time": request.parsed.start_time,
                     "end_time": request.parsed.end_time
                 },
-                "is_conflict": False
+                "is_conflict": False,
+                "idempotent": False
             }
 
         except Exception as e:
@@ -52,11 +66,9 @@ class TaskService:
             raise ValueError("任务写入失败（错误码3001）")
 
     def get_tasks_by_date(self, date: str, status: Optional[str], trace_id: str) -> Dict:
-        """按日期查询任务"""
         try:
             tasks = self.task_repo.get_tasks_by_date(date, status, trace_id)
 
-            # 计算灵动岛状态
             island_state = self._get_island_state(tasks)
 
             return {
@@ -68,13 +80,30 @@ class TaskService:
             raise ValueError("任务查询失败")
 
     def _get_island_state(self, tasks: List[Dict]) -> Dict:
-        """计算灵动岛状态（简化版）"""
         if not tasks:
             return {"mode": "silent", "display_text": "", "severity": "info"}
 
-        # 实际需根据任务时间计算状态，此处简化
         return {
             "mode": "countdown",
             "display_text": "还有2h 32m",
             "severity": "info"
         }
+
+    def delete_task(self, task_id: str, trace_id: str) -> bool:
+        try:
+            return self.task_repo.delete_task(task_id, trace_id)
+        except Exception as e:
+            log_with_trace(logger, "ERROR", f"删除任务失败：{str(e)}", trace_id)
+            return False
+
+    def get_pending_reminders(self) -> List[Dict]:
+        return self.task_repo.get_pending_reminders(30)
+
+    def mark_reminded(self, task_id: str) -> bool:
+        return self.task_repo.mark_reminded(task_id)
+
+    def update_task_status(self, task_id: str, new_status: str) -> bool:
+        return self.task_repo.update_task_status(task_id, new_status)
+
+    def expire_overdue_tasks(self) -> int:
+        return self.task_repo.expire_overdue_tasks()

@@ -8,10 +8,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.4.0",
-    "pinia": "^2.1.0"
+    "@capacitor/android": "^8.3.1",
+    "pinia": "^2.1.0",
+    "vue": "^3.4.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.3.1",
+    "@capacitor/core": "^8.3.1",
     "@vitejs/plugin-vue": "^5.0.0",
     "autoprefixer": "^10.4.0",
     "postcss": "^8.4.0",

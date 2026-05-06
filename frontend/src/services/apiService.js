@@ -12,27 +12,94 @@ function generate_trace_id() {
   return `trace_${date_str}_${random}`
 }
 
+let toastContainer = null
+
+function showToast(message, type = 'error') {
+  if (!toastContainer) {
+    toastContainer = document.createElement('div')
+    toastContainer.id = 'api-toast-container'
+    toastContainer.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 99999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    `
+    document.body.appendChild(toastContainer)
+  }
+
+  const toast = document.createElement('div')
+  const bgColor = type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-blue-600'
+  toast.className = `${bgColor} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 animate-slide-in`
+  toast.style.cssText = `
+    pointer-events: auto;
+    max-width: 320px;
+    animation: slideInRight 0.3s ease-out;
+  `
+
+  const icon = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'
+  toast.innerHTML = `<span>${icon}</span><span class="text-sm">${message}</span>`
+
+  toastContainer.appendChild(toast)
+
+  setTimeout(() => {
+    toast.style.opacity = '0'
+    toast.style.transform = 'translateX(100%)'
+    toast.style.transition = 'all 0.3s ease-in'
+    setTimeout(() => toast.remove(), 300)
+  }, 4000)
+}
+
+const style = document.createElement('style')
+style.textContent = `
+  @keyframes slideInRight {
+    from { opacity: 0; transform: translateX(100%); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+`
+document.head.appendChild(style)
+
 async function request(url, options = {}) {
   const default_options = {
     headers: {
       'Content-Type': 'application/json'
-    }
+    },
+    signal: AbortSignal.timeout(15000)
   }
 
   console.log('📡 [NETWORK] 请求:', url, options.method || 'GET')
-  const response = await fetch(url, {
-    ...default_options,
-    ...options
-  })
+  try {
+    const response = await fetch(url, {
+      ...default_options,
+      ...options
+    })
 
-  if (!response.ok) {
-    const error_data = await response.json().catch(() => ({}))
-    throw new Error(error_data.detail || `HTTP ${response.status}`)
+    if (!response.ok) {
+      const error_data = await response.json().catch(() => ({}))
+      const errorMsg = error_data.message || error_data.detail || `HTTP ${response.status}`
+      showToast(errorMsg, 'error')
+      throw new Error(errorMsg)
+    }
+
+    const json = await response.json()
+
+    if (json.code && json.code !== 0) {
+      showToast(json.message || `错误码 ${json.code}`, 'error')
+    }
+
+    console.log('📡 [NETWORK] 响应:', url, response.status, json)
+    return json
+  } catch (error) {
+    if (error.name === 'AbortError' || error.message.includes('timeout') || error.message.includes('aborted')) {
+      showToast('请求超时，请检查网络连接', 'error')
+    } else if (!error.message.includes('HTTP')) {
+      showToast(error.message || '网络错误', 'error')
+    }
+    throw error
   }
-
-  const json = await response.json()
-  console.log('📡 [NETWORK] 响应:', url, response.status, json)
-  return json
 }
 
 export async function parse_task(source_text, context = {}, meta = {}) {
@@ -133,6 +200,18 @@ export async function delete_task(task_id) {
   try {
     const data = await request(`/api/v1/tasks/${task_id}`, {
       method: 'DELETE'
+    })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function update_task_status(task_id, status) {
+  try {
+    const data = await request(`/api/v1/tasks/${task_id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
     })
     return { success: true, data }
   } catch (error) {

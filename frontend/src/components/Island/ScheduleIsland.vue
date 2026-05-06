@@ -114,6 +114,51 @@
           </button>
         </div>
       </div>
+
+      <div
+        v-else-if="isDetail"
+        key="detail"
+        class="px-5 py-4 bg-neutral-900/90 backdrop-blur-2xl rounded-2xl border border-white/20 shadow-2xl"
+        style="min-width: 300px;"
+      >
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-10 h-10 bg-green-600/30 rounded-xl flex items-center justify-center">
+            <span class="text-lg">{{ taskIcon }}</span>
+          </div>
+          <div>
+            <p class="text-green-400 text-xs font-medium uppercase tracking-wider">Task Detail</p>
+            <p class="text-white text-base font-semibold mt-0.5 truncate">{{ activeTask?.title }}</p>
+          </div>
+        </div>
+        <div class="bg-white/5 rounded-lg p-3 mb-3">
+          <div class="flex items-center justify-between text-sm mb-2">
+            <span class="text-neutral-400">开始</span>
+            <span class="text-white font-mono">{{ formatTime(activeTask?.start_time) }}</span>
+          </div>
+          <div class="flex items-center justify-between text-sm mb-2">
+            <span class="text-neutral-400">结束</span>
+            <span class="text-white font-mono">{{ formatTime(activeTask?.end_time) }}</span>
+          </div>
+          <div class="flex items-center justify-between text-sm">
+            <span class="text-neutral-400">地点</span>
+            <span class="text-white truncate ml-2">{{ activeTask?.location || '未设置' }}</span>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button
+            class="flex-1 px-3 py-2 bg-red-600/80 hover:bg-red-600 rounded-lg text-white text-sm font-medium transition-colors"
+            @click="handleDetailCancel"
+          >
+            删除
+          </button>
+          <button
+            class="flex-1 px-3 py-2 bg-green-600/80 hover:bg-green-600 rounded-lg text-white text-sm font-medium transition-colors"
+            @click="handleDetailComplete"
+          >
+            完成
+          </button>
+        </div>
+      </div>
     </Transition>
   </div>
 </template>
@@ -128,6 +173,7 @@ const isIdle = computed(() => store.island_state === 'idle')
 const isTracking = computed(() => store.island_state === 'tracking')
 const isWarning = computed(() => store.island_state === 'warning')
 const isReminder = computed(() => store.island_state === 'reminder')
+const isDetail = computed(() => store.island_state === 'detail')
 const activeTask = computed(() => store.active_task)
 
 const taskIcon = computed(() => {
@@ -143,13 +189,13 @@ const countdownText = computed(() => {
   const now = Date.now()
   const start = new Date(activeTask.value.start_time).getTime()
   const diff = start - now
-  if (diff <= 0) return '即将开始'
+  if (diff <= 0) return '已过期'
   const hours = Math.floor(diff / 3600000)
   const minutes = Math.floor((diff % 3600000) / 60000)
   if (hours > 0) {
-    return `${hours}小时${minutes}分`
+    return `还有${hours}小时${minutes}分`
   }
-  return `${minutes}分钟`
+  return `还有${minutes}分钟`
 })
 
 const urgencyClass = computed(() => {
@@ -158,7 +204,7 @@ const urgencyClass = computed(() => {
   const start = new Date(activeTask.value.start_time).getTime()
   const diff = start - now
   const minute = 60000
-  if (diff <= 0) return 'bg-red-500 animate-pulse'
+  if (diff <= 0) return 'bg-red-600'
   if (diff <= 10 * minute) return 'bg-red-500 animate-pulse'
   if (diff <= 30 * minute) return 'bg-orange-500 animate-pulse'
   return 'bg-green-500'
@@ -215,9 +261,26 @@ const handlePostpone = () => {
 const handleConfirm = async () => {
   await store.create_task_from_active()
 }
+
+const handleDetailCancel = () => {
+  store.clearActiveTask()
+}
+
+const handleDetailComplete = async () => {
+  if (activeTask.value) {
+    await store.toggleTaskStatus(activeTask.value)
+    store.clearActiveTask()
+  }
+}
 </script>
 
 <style scoped>
+.island-enter-active {
+  transition: all 500ms ease-out;
+}
+.island-leave-active {
+  transition: all 300ms ease-in;
+}
 .island-enter-from {
   opacity: 0;
   transform: scale(0.8) translateX(-50%);

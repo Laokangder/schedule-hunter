@@ -1,4 +1,4 @@
-from src.services.llm_service import BlueLMService
+from src.services.llm_service import LLMService
 from src.core.config import settings
 from src.core.logger import get_logger, log_with_trace
 from src.models.request import ParseTaskRequest
@@ -12,7 +12,7 @@ logger = get_logger("parse_service")
 
 class ParseService:
     def __init__(self):
-        self.llm_service = BlueLMService()
+        self.llm_service = LLMService()
         self.timezone = pytz.timezone(settings.DEFAULT_TIMEZONE)
 
     def fallback_parse(self, source_text: str, trace_id: str) -> Dict:
@@ -26,9 +26,10 @@ class ParseService:
         ]
 
         now = datetime.now(self.timezone)
-        start_time = now + timedelta(days=1)
-        start_time = start_time.replace(hour=15, minute=0, second=0, microsecond=0)
-        end_time = start_time + timedelta(minutes=settings.DEFAULT_DURATION_MINUTES)
+        default_start = now + timedelta(hours=1)
+        if default_start.hour >= 23:
+            default_start = default_start.replace(hour=22, minute=59, second=59)
+        default_end = default_start + timedelta(minutes=settings.DEFAULT_DURATION_MINUTES)
 
         for pattern in time_patterns:
             match = re.search(pattern, source_text)
@@ -37,8 +38,8 @@ class ParseService:
 
         return {
             "title": source_text,
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
+            "start_time": default_start.isoformat(),
+            "end_time": default_end.isoformat(),
             "location": None,
             "participants": [],
             "confidence": 0.5,
@@ -59,6 +60,12 @@ class ParseService:
         if not llm_result or llm_result.get("confidence", 0) < 0.6:
             llm_result = self.fallback_parse(request.source_text, trace_id)
 
+        now = datetime.now(self.timezone)
+        default_start = now + timedelta(hours=1)
+        if default_start.hour >= 23:
+            default_start = default_start.replace(hour=22, minute=59, second=59)
+        default_end = default_start + timedelta(minutes=settings.DEFAULT_DURATION_MINUTES)
+
         if llm_result.get("end_time") is None:
             if llm_result.get("start_time"):
                 start_dt = datetime.fromisoformat(llm_result["start_time"])
@@ -66,14 +73,14 @@ class ParseService:
                     start_dt = start_dt.replace(tzinfo=self.timezone)
                 llm_result["end_time"] = (start_dt + timedelta(minutes=settings.DEFAULT_DURATION_MINUTES)).isoformat()
             else:
-                now = datetime.now(self.timezone)
-                llm_result["start_time"] = (now + timedelta(hours=1)).isoformat()
-                llm_result["end_time"] = (now + timedelta(hours=1) + timedelta(minutes=settings.DEFAULT_DURATION_MINUTES)).isoformat()
+                llm_result["start_time"] = default_start.isoformat()
+                llm_result["end_time"] = default_end.isoformat()
+                llm_result["needs_confirmation"] = True
 
         if not llm_result.get("location"):
             llm_result["location"] = "未知"
         if not llm_result.get("start_time"):
-            llm_result["start_time"] = datetime.now(self.timezone).isoformat()
+            llm_result["start_time"] = default_start.isoformat()
             llm_result["needs_confirmation"] = True
 
         llm_result.setdefault("timezone",

@@ -18,6 +18,7 @@ class DBConnection:
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             task_id TEXT PRIMARY KEY,
+            request_id TEXT UNIQUE,
             title TEXT NOT NULL,
             start_time TEXT NOT NULL,
             end_time TEXT NOT NULL,
@@ -28,9 +29,30 @@ class DBConnection:
             source_text TEXT,
             input_type TEXT,
             status TEXT DEFAULT 'scheduled',
+            is_reminded INTEGER DEFAULT 0,
             created_at TEXT
         )
         ''')
+
+        try:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN request_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN is_reminded INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN source_text TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'pending'")
+        except sqlite3.OperationalError:
+            pass
 
         # 创建日志表
         cursor.execute('''
@@ -41,6 +63,17 @@ class DBConnection:
             status_code INTEGER,
             created_at TEXT
         )
+        ''')
+
+        # 创建索引（提升按日期查询性能）
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_tasks_start_time ON tasks(start_time)
+        ''')
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)
+        ''')
+        cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_tasks_request_id ON tasks(request_id)
         ''')
 
         conn.commit()

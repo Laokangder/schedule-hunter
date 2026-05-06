@@ -37,6 +37,7 @@ class ParseTaskResponseData(BaseModel):
     suggestions: List[Suggestion] = []
     needs_confirmation: bool = False
     ambiguities: List[Ambiguity] = []
+    ai_fallback: bool = False
 
 
 class CreateTaskResponseData(BaseModel):
