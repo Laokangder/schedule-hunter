@@ -15,14 +15,19 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./schedule.db"  # 兼容原有字段
 
     DEFAULT_DURATION_MINUTES: int = 60
-    BLUELM_API_KEY: Optional[str] = "sk-xuanji-2026488951-bFFoZkRVUGZpV0ZMeFFpaQ=="
-    BLUELM_API_URL: Optional[str] = "https://aigc.vivo.com/api/blueLM"
+    # 蓝心大模型配置（从环境变量读取，请勿硬编码）
+    BLUELM_API_KEY: Optional[str] = None
+    BLUELM_API_URL: Optional[str] = "https://api-ai.vivo.com.cn/v1/chat/completions"
     BLUELM_TIMEOUT: int = 30
+    # 通用 LLM 配置（从环境变量读取，请勿硬编码）
+    LLM_API_KEY: Optional[str] = None
+    LLM_API_URL: Optional[str] = "https://api-ai.vivo.com.cn/v1/chat/completions"
+    LLM_MODEL: str = "Doubao-Seed-2.0-lite"
 
     # ========== 通用配置（兼容原有字段） ==========
     api_key: Optional[str] = None  # 兼容原有多余字段
-    cors_origins: str = "http://localhost:5173,http://localhost:8080"  # 跨域配置
-    APP_HOST: str = "127.0.0.1"  # 补充服务地址（潜在缺失）
+    cors_origins: str = "*"  # 跨域配置
+    APP_HOST: str = "0.0.0.0"  # 补充服务地址（潜在缺失）
     APP_PORT: int = 8000         # 补充服务端口（潜在缺失）
 
     class Config:
