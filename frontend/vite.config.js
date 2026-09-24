@@ -2,7 +2,9 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
-export default defineConfig({
+export default defineConfig(() => {
+  const apiTarget = process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8000'
+  return ({
   plugins: [vue()],
   resolve: {
     alias: {
@@ -14,13 +16,14 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://192.168.2.8:8000',
+        target: apiTarget,
         changeOrigin: true
       },
       '/ws': {
-        target: 'ws://192.168.2.8:8000',
+        target: apiTarget.replace(/^http/, 'ws'),
         ws: true
       }
     }
   }
+  })
 })

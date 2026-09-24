@@ -43,11 +43,15 @@ class ParseTaskResponseData(BaseModel):
 class CreateTaskResponseData(BaseModel):
     task_id: str
     status: str
+    normalized: Dict[str, Any]
+    is_conflict: bool = False
+    idempotent: bool = False
 
 
 class ConflictCheckResponseData(BaseModel):
     has_conflict: bool
-    conflict_tasks: list = []
+    conflicts: list = []
+    ai_summary: str = ""
 
 
 class WebSocketPushData(BaseModel):
@@ -57,3 +61,4 @@ class WebSocketPushData(BaseModel):
 
 class TaskListResponseData(BaseModel):
     task_list: List[Dict[str, Any]]
+    island_state: Dict[str, Any]

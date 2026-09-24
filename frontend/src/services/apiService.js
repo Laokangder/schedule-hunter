@@ -1,3 +1,37 @@
+import { Capacitor } from '@capacitor/core'
+
+const API_BASE_STORAGE_KEY = 'schedule_hunter_api_base_url'
+
+function normalize_base_url(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const with_protocol = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+  return with_protocol.replace(/\/+$/, '')
+}
+
+function get_build_time_api_url() {
+  if (Capacitor.isNativePlatform()) {
+    return import.meta.env.VITE_NATIVE_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || ''
+  }
+  return import.meta.env.VITE_API_BASE_URL || ''
+}
+
+export function get_api_base_url() {
+  const saved = window.localStorage.getItem(API_BASE_STORAGE_KEY)
+  return normalize_base_url(saved || get_build_time_api_url())
+}
+
+export function set_api_base_url(value) {
+  const normalized = normalize_base_url(value)
+  if (normalized) window.localStorage.setItem(API_BASE_STORAGE_KEY, normalized)
+  else window.localStorage.removeItem(API_BASE_STORAGE_KEY)
+  return normalized
+}
+
+export function is_native_app() {
+  return Capacitor.isNativePlatform()
+}
+
 function generate_request_id() {
   const now = new Date()
   const date_str = now.toISOString().slice(0, 10).replace(/-/g, '')
@@ -62,6 +96,29 @@ style.textContent = `
 `
 document.head.appendChild(style)
 
+export function get_websocket_url() {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL
+  const api_base_url = get_api_base_url()
+  if (api_base_url) return `${api_base_url.replace(/^http/i, 'ws')}/ws/tasks`
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/ws/tasks`
+}
+
+export async function test_backend_connection(value = get_api_base_url()) {
+  const base_url = normalize_base_url(value)
+  if (!base_url) {
+    return { success: false, error: '请先填写后端地址' }
+  }
+  try {
+    const response = await fetch(`${base_url}/`, { signal: AbortSignal.timeout(5000) })
+    if (!response.ok) return { success: false, error: `HTTP ${response.status}` }
+    const data = await response.json()
+    return { success: true, data, base_url }
+  } catch (error) {
+    return { success: false, error: error.message || '无法连接后端' }
+  }
+}
+
 async function request(url, options = {}) {
   const default_options = {
     headers: {
@@ -72,7 +129,7 @@ async function request(url, options = {}) {
 
   console.log('📡 [NETWORK] 请求:', url, options.method || 'GET')
   try {
-    const response = await fetch(url, {
+    const response = await fetch(`${get_api_base_url()}${url}`, {
       ...default_options,
       ...options
     })
@@ -201,6 +258,15 @@ export async function delete_task(task_id) {
     const data = await request(`/api/v1/tasks/${task_id}`, {
       method: 'DELETE'
     })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function delete_expired_tasks() {
+  try {
+    const data = await request('/api/v1/tasks/expired', { method: 'DELETE' })
     return { success: true, data }
   } catch (error) {
     return { success: false, error: error.message }

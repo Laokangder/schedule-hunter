@@ -61,11 +61,12 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket, client_id)
 
 
-async def broadcast_reminder(task_id: str, title: str):
+async def broadcast_reminder(task_id: str, title: str, offset_minutes: int = 0):
     message = {
         "type": "REMINDER",
         "task_id": task_id,
-        "title": title
+        "title": title,
+        "offset_minutes": offset_minutes
     }
     await ws_manager.broadcast(message)
     logger.info(f"推送提醒: {task_id} - {title}")

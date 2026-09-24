@@ -49,7 +49,8 @@ class ConflictService:
 
         for task in existing_tasks:
             task_end = self._parse_iso_time(task["end_time"])
-            if (candidate_start - task_end) < buffer:
+            gap = candidate_start - task_end
+            if timedelta(0) <= gap < buffer:
                 conflicts.append({
                     "task_id": task["task_id"],
                     "conflict_type": "travel_conflict",

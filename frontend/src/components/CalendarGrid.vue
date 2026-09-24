@@ -1,21 +1,20 @@
 <template>
-  <div class="bg-neutral-900/50 rounded-2xl p-4 border border-white/5">
-    <div class="flex items-center justify-between mb-4">
+  <div class="calendar-surface">
+    <div class="flex items-center justify-between mb-5">
       <button
         @click="prevMonth"
-        class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors"
+        class="w-9 h-9 flex items-center justify-center rounded-full hover:bg-white/5 text-neutral-500 hover:text-white transition-colors"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
         </svg>
       </button>
       <div class="text-center">
-        <h3 class="text-white font-semibold">{{ year }}.{{ String(month + 1).padStart(2, '0') }}</h3>
-        <p class="text-xs text-neutral-500">{{ weekDays[locale]?.[new Date(year, month, 1).getDay()] || '' }}</p>
+        <h3 class="text-white text-lg font-semibold">{{ year }} 年 {{ String(month + 1).padStart(2, '0') }} 月</h3>
       </div>
       <button
         @click="nextMonth"
-        class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors"
+        class="w-9 h-9 flex items-center justify-center rounded-full hover:bg-white/5 text-neutral-500 hover:text-white transition-colors"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -44,14 +43,14 @@
           @click="selectDate(day)"
           class="w-full h-full flex flex-col items-center justify-center rounded-lg transition-all font-mono text-sm relative"
           :class="[
-            isToday(day) ? 'text-green-400' : isSelected(day) ? 'text-white' : 'text-neutral-400',
-            isSelected(day) ? 'bg-neutral-800 ring-1 ring-green-500' : 'hover:bg-neutral-800/50'
+            isToday(day) ? 'text-blue-400' : isSelected(day) ? 'text-white' : 'text-neutral-400',
+            isSelected(day) ? 'bg-blue-500/15 ring-1 ring-blue-500/60' : 'hover:bg-white/5'
           ]"
         >
           <span>{{ day }}</span>
           <span
             v-if="hasTask(day)"
-            class="absolute bottom-1 w-1 h-1 rounded-full bg-green-500"
+            class="absolute bottom-1 w-1 h-1 rounded-full bg-blue-500"
           ></span>
         </button>
         <div v-else class="w-full h-full"></div>
@@ -139,3 +138,11 @@ function selectDate(day) {
   store.setSelectedDate(dateStr)
 }
 </script>
+
+<style scoped>
+.calendar-surface {
+  padding: 1.25rem 0;
+  border-top: 1px solid rgba(255, 255, 255, .07);
+  border-bottom: 1px solid rgba(255, 255, 255, .07);
+}
+</style>

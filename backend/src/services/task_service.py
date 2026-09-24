@@ -65,8 +65,9 @@ class TaskService:
             log_with_trace(logger, "ERROR", f"任务创建失败：{str(e)}", trace_id)
             raise ValueError("任务写入失败（错误码3001）")
 
-    def get_tasks_by_date(self, date: str, status: Optional[str], trace_id: str) -> Dict:
+    def get_tasks_by_date(self, date: Optional[str], status: Optional[str], trace_id: str) -> Dict:
         try:
+            self.task_repo.expire_overdue_tasks()
             tasks = self.task_repo.get_tasks_by_date(date, status, trace_id)
 
             island_state = self._get_island_state(tasks)
@@ -99,11 +100,15 @@ class TaskService:
     def get_pending_reminders(self) -> List[Dict]:
         return self.task_repo.get_pending_reminders(30)
 
-    def mark_reminded(self, task_id: str) -> bool:
-        return self.task_repo.mark_reminded(task_id)
+    def mark_reminded(self, task_id: str, offset_minutes: int) -> bool:
+        return self.task_repo.mark_reminded(task_id, offset_minutes)
 
     def update_task_status(self, task_id: str, new_status: str) -> bool:
         return self.task_repo.update_task_status(task_id, new_status)
 
     def expire_overdue_tasks(self) -> int:
         return self.task_repo.expire_overdue_tasks()
+
+    def delete_expired_tasks(self, trace_id: str) -> int:
+        self.task_repo.expire_overdue_tasks()
+        return self.task_repo.delete_expired_tasks(trace_id)

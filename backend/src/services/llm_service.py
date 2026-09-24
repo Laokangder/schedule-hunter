@@ -5,50 +5,65 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict
 from src.core.config import settings
-from src.core.logger import get_logger
+from src.core.logger import get_logger, log_with_trace
 
 logger = get_logger("llm_service")
 
 
 class LLMService:
     def __init__(self):
-        self.api_key = settings.LLM_API_KEY or os.getenv("LLM_API_KEY") or settings.BLUELM_API_KEY
-        self.api_url = settings.LLM_API_URL or os.getenv("LLM_API_URL") or settings.BLUELM_API_URL
+        self.api_key = settings.LLM_API_KEY or os.getenv("LLM_API_KEY")
+        self.api_url = settings.LLM_API_URL or os.getenv("LLM_API_URL")
         self.model = settings.LLM_MODEL
         self.default_duration_minutes = 60
         self.timeout = 15.0
 
     async def parse_task(self, source_text: str, context: Dict = None, trace_id: str = "") -> Dict:
         try:
-            return await self._call_llm_api(source_text)
+            result = await self._call_llm_api(source_text, trace_id)
+            log_with_trace(
+                logger,
+                "INFO",
+                f"LLM_PARSED input={source_text!r} result={json.dumps(result, ensure_ascii=False)}",
+                trace_id,
+            )
+            return result
         except TimeoutError:
-            logger.warning(f"LLM API timeout: {source_text[:50]}")
+            log_with_trace(logger, "WARNING", f"LLM_TIMEOUT input={source_text[:50]!r}", trace_id)
             result = self._fallback_parse(source_text)
             result["ai_fallback"] = True
             return result
         except Exception as e:
-            logger.error(f"LLM API error: {str(e)}")
+            log_with_trace(logger, "ERROR", f"LLM_ERROR input={source_text[:50]!r} error={str(e)}", trace_id)
             result = self._fallback_parse(source_text)
             result["ai_fallback"] = True
             return result
 
-    async def _call_llm_api(self, source_text: str) -> Dict:
-        current_date = datetime.now().strftime('%Y-%m-%d')
+    async def _call_llm_api(self, source_text: str, trace_id: str = "") -> Dict:
+        china_tz = timezone(timedelta(hours=8))
+        current_dt = datetime.now(china_tz)
+        current_date = current_dt.strftime('%Y-%m-%d')
+        current_datetime = current_dt.isoformat(timespec="seconds")
+        tomorrow_date = (current_dt + timedelta(days=1)).strftime('%Y-%m-%d')
 
         system_prompt = f"""你是一个精确的时间提取助手。
 
-【系统基准日期】{current_date}
+【系统基准时间】{current_datetime}
 
 【核心规则】
 1. 日期锚定：若用户未提及具体日期词汇（"明天"、"后天"、"28号"等），一律使用基准日期 {current_date}
 2. 时间绝对忠诚：用户输入的时间必须原样提取并转为24小时制，绝不擅自修改
-3. 禁止猜测：若用户未提供时间，设置 needs_confirmation=true，不擅自填充
+3. 相对时间：如“十分钟后”“两小时后”，必须以系统基准时间精确加算
+4. 地点提取：如“在味道元吃饭”，location 必须是“味道元”，title 必须是“吃饭”
+5. 禁止猜测：若用户未提供时间，设置 needs_confirmation=true，不擅自填充
 
 【必须严格遵循的JSON格式】
 {{
   "title": "事件名称",
   "start_time": "YYYY-MM-DDTHH:MM:SS+08:00",
   "end_time": "YYYY-MM-DDTHH:MM:SS+08:00",
+  "location": "地点或null",
+  "participants": [],
   "confidence": 0.95,
   "needs_confirmation": false,
   "ambiguities": []
@@ -58,19 +73,19 @@ class LLMService:
 
 示例1：
 输入：明天上午八点半开会
-必须输出：{{"title":"开会","start_time":"2026-04-29T08:30:00+08:00","end_time":"2026-04-29T09:30:00+08:00","confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
+必须输出：{{"title":"开会","start_time":"{tomorrow_date}T08:30:00+08:00","end_time":"{tomorrow_date}T09:30:00+08:00","location":null,"participants":[],"confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
 
 示例2：
-输入：28日晚上七点吃饭
-必须输出：{{"title":"吃饭","start_time":"2026-04-28T19:00:00+08:00","end_time":"2026-04-28T20:00:00+08:00","confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
+输入：明天下午八点在味道元吃饭
+必须输出：{{"title":"吃饭","start_time":"{tomorrow_date}T20:00:00+08:00","end_time":"{tomorrow_date}T21:00:00+08:00","location":"味道元","participants":[],"confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
 
 示例3：
 输入：下午三点去跑步
-必须输出：{{"title":"去跑步","start_time":"{current_date}T15:00:00+08:00","end_time":"{current_date}T16:00:00+08:00","confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
+必须输出：{{"title":"去跑步","start_time":"{current_date}T15:00:00+08:00","end_time":"{current_date}T16:00:00+08:00","location":null,"participants":[],"confidence":0.95,"needs_confirmation":false,"ambiguities":[]}}
 
 示例4：
 输入：洗澡
-必须输出：{{"title":"洗澡","start_time":null,"end_time":null,"confidence":0.3,"needs_confirmation":true,"ambiguities":["time"]}}
+必须输出：{{"title":"洗澡","start_time":null,"end_time":null,"location":null,"participants":[],"confidence":0.3,"needs_confirmation":true,"ambiguities":["time"]}}
 
 请严格按上述JSON格式输出，不要添加任何其他文字。"""
 
@@ -83,7 +98,8 @@ class LLMService:
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.3,
-            "max_tokens": 500
+            "max_tokens": 1000,
+            "response_format": {"type": "json_object"}
         }
 
         headers = {
@@ -96,7 +112,25 @@ class LLMService:
             response.raise_for_status()
             data = response.json()
 
-        raw_content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        choice = data.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        raw_content = message.get("content", "") or ""
+        reasoning_content = message.get("reasoning_content", "") or ""
+        log_with_trace(
+            logger,
+            "INFO",
+            "LLM_META "
+            f"model={self.model!r} finish_reason={choice.get('finish_reason')!r} "
+            f"content_chars={len(raw_content)} reasoning_chars={len(reasoning_content)} "
+            f"usage={data.get('usage', {})!r}",
+            trace_id,
+        )
+        log_with_trace(
+            logger,
+            "INFO",
+            f"LLM_RAW model={self.model!r} content={raw_content[:2000]!r}",
+            trace_id,
+        )
         raw_content = re.sub(r'^```json\s*', '', raw_content, flags=re.DOTALL)
         raw_content = re.sub(r'^```\s*', '', raw_content, flags=re.DOTALL)
         raw_content = re.sub(r'\s*```$', '', raw_content, flags=re.DOTALL)

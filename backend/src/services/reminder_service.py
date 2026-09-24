@@ -7,7 +7,7 @@ import traceback
 
 logger = get_logger("reminder_service")
 
-scheduler = AsyncIOScheduler()
+scheduler = None
 
 
 async def check_reminders():
@@ -20,10 +20,11 @@ async def check_reminders():
 
         for task in pending_tasks:
             logger.info(f"触发提醒：{task['task_id']} - {task['title']}")
-            task_service.mark_reminded(task['task_id'])
+            offset_minutes = task["due_offset_minutes"]
+            task_service.mark_reminded(task['task_id'], offset_minutes)
 
             from src.api.v1.websocket import broadcast_reminder
-            await broadcast_reminder(task['task_id'], task['title'])
+            await broadcast_reminder(task['task_id'], task['title'], offset_minutes)
 
     except Exception as e:
         logger.error(f"提醒调度异常：{str(e)}\n{traceback.format_exc()}")
@@ -47,16 +48,20 @@ async def expire_overdue_tasks():
 
 
 def start_reminder_scheduler():
+    global scheduler
+    if scheduler and scheduler.running:
+        return
+    scheduler = AsyncIOScheduler()
     scheduler.add_job(
         check_reminders,
-        trigger=IntervalTrigger(seconds=60),
+        trigger=IntervalTrigger(seconds=30),
         id="reminder_check",
         name="检查待提醒任务",
         replace_existing=True
     )
     scheduler.add_job(
         expire_overdue_tasks,
-        trigger=IntervalTrigger(seconds=60),
+        trigger=IntervalTrigger(seconds=30),
         id="expire_check",
         name="检查过期任务",
         replace_existing=True
@@ -66,6 +71,8 @@ def start_reminder_scheduler():
 
 
 def stop_reminder_scheduler():
-    if scheduler.running:
-        scheduler.shutdown()
+    global scheduler
+    if scheduler and scheduler.running:
+        scheduler.shutdown(wait=False)
         logger.info("调度器已停止")
+    scheduler = None

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import * as apiService from '@/services/apiService'
+import { localDateKey } from '@/utils/date'
 
 // 错误码到中文消息的映射
 const ERROR_MESSAGES = {
@@ -16,7 +17,6 @@ const ERROR_MESSAGES = {
 
 export const useTaskStore = defineStore('task', {
   state: () => ({
-    is_mock_mode: false,
     active_task: null,
     pending_task: null,
     is_conflict: false,
@@ -32,6 +32,7 @@ export const useTaskStore = defineStore('task', {
     last_response: null,
     trace_id: null,
     tasks: [],
+    expired_tasks: [],
     ws: null,
     is_loading: false,
     error: null,
@@ -39,14 +40,16 @@ export const useTaskStore = defineStore('task', {
     reminder_threshold: 30 * 60 * 1000,
     _timer_id: null,
     _poll_interval_id: null,
+    _expiration_timer_id: null,
     _disconnected: false,
     _native_handlers: [],
-    selected_date: new Date().toISOString().split('T')[0]
+    selected_date: localDateKey()
   }),
 
   getters: {
     is_idle: (state) => state.island_state === 'idle',
     is_tracking: (state) => state.island_state === 'tracking',
+    is_candidate: (state) => state.island_state === 'candidate',
     is_reminder: (state) => state.island_state === 'reminder',
     is_warning: (state) => state.island_state === 'warning',
     is_detail: (state) => state.island_state === 'detail',
@@ -59,10 +62,10 @@ export const useTaskStore = defineStore('task', {
     },
     today_tasks: (state) => {
       const tasks = state.tasks || []
-      const selected = state.selected_date || new Date().toISOString().split('T')[0]
+      const selected = state.selected_date || localDateKey()
       return tasks.filter(task => {
         const task_date = task.start_time?.split('T')[0]
-        return task_date === selected
+        return task_date === selected && task.status !== 'expired'
       })
     },
     marked_dates: (state) => {
@@ -82,10 +85,6 @@ export const useTaskStore = defineStore('task', {
   },
 
   actions: {
-    toggle_mock_mode() {
-      this.is_mock_mode = !this.is_mock_mode
-    },
-
     _start_reminder_timer() {
       if (this._timer_id) {
         clearInterval(this._timer_id)
@@ -127,16 +126,47 @@ export const useTaskStore = defineStore('task', {
     },
 
     _start_poll() {
-      if (this._poll_interval_id) return
-      this._poll_interval_id = setInterval(() => {
-        this.fetch_latest_tasks()
-      }, 60000)
+      if (!this._poll_interval_id) {
+        this._poll_interval_id = setInterval(() => {
+          this.fetch_latest_tasks()
+        }, 30000)
+      }
+      if (!this._expiration_timer_id) {
+        this._expiration_timer_id = setInterval(() => {
+          this._sync_local_expiration()
+        }, 1000)
+      }
     },
 
     _stop_poll() {
       if (this._poll_interval_id) {
         clearInterval(this._poll_interval_id)
         this._poll_interval_id = null
+      }
+      if (this._expiration_timer_id) {
+        clearInterval(this._expiration_timer_id)
+        this._expiration_timer_id = null
+      }
+    },
+
+    _sync_local_expiration() {
+      const now = Date.now()
+      const newlyExpired = []
+      this.tasks = (this.tasks || []).filter(task => {
+        if (!['scheduled', 'pending'].includes(task.status)) return true
+        const endTime = new Date(task.end_time || task.start_time).getTime()
+        if (!Number.isFinite(endTime) || endTime > now) return true
+        newlyExpired.push({ ...task, status: 'expired' })
+        return false
+      })
+      for (const task of newlyExpired) {
+        const taskId = task.task_id || task.id
+        const existingIndex = this.expired_tasks.findIndex(item => (item.task_id || item.id) === taskId)
+        if (existingIndex >= 0) {
+          this.expired_tasks[existingIndex] = task
+        } else {
+          this.expired_tasks.unshift(task)
+        }
       }
     },
 
@@ -152,7 +182,10 @@ export const useTaskStore = defineStore('task', {
       this.error_msg = ''
 
       try {
-        const result = await apiService.fetch_tasks(this.selected_date)
+        const [result, expiredResult] = await Promise.all([
+          apiService.fetch_tasks(this.selected_date),
+          apiService.fetch_tasks(null, 'expired')
+        ])
 
         if (result.success && result.data) {
           const response_data = result.data.data || result.data
@@ -165,6 +198,10 @@ export const useTaskStore = defineStore('task', {
         } else {
           this.error = result.error
           this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
+        }
+        if (expiredResult.success && expiredResult.data) {
+          const expired_data = expiredResult.data.data || expiredResult.data
+          this.expired_tasks = expired_data.task_list || expired_data.tasks || []
         }
       } catch (error) {
         this.error = error.message
@@ -255,12 +292,10 @@ export const useTaskStore = defineStore('task', {
             if (this.is_conflict) {
               this.island_state = 'warning'
               this.pending_task = task
-            } else if (this.needs_confirmation) {
-              this.island_state = 'idle'
-              this.pending_task = task
             } else {
-              this._schedule_reminder(task)
-              this.island_state = 'idle'
+              this.active_task = task
+              this.pending_task = task
+              this.island_state = 'candidate'
             }
 
             return { success: true, data: response_data }
@@ -333,9 +368,12 @@ export const useTaskStore = defineStore('task', {
 
             const raw_data = result.data.data?.parsed || result.data.data || result.data
 
-            this.active_task = raw_data
+            this.active_task = {
+              ...raw_data,
+              source_text
+            }
             this.is_conflict = !!raw_data.is_conflict
-            this.island_state = 'reminder'
+            this.island_state = 'candidate'
 
             if (raw_data.is_conflict) {
               this.island_state = 'warning'
@@ -401,6 +439,11 @@ export const useTaskStore = defineStore('task', {
     },
 
     clearActiveTask() {
+      this.clear_active_task()
+    },
+
+    acknowledge_reminder() {
+      if (this.island_state !== 'reminder') return
       this.clear_active_task()
     },
 
@@ -579,6 +622,8 @@ export const useTaskStore = defineStore('task', {
           this.clear_active_task()
         }
       }
+      const expiredIndex = this.expired_tasks.findIndex(t => t.id === task_id || t.task_id === task_id)
+      if (expiredIndex > -1) this.expired_tasks.splice(expiredIndex, 1)
     },
 
     connect_web_socket() {
@@ -587,7 +632,8 @@ export const useTaskStore = defineStore('task', {
       }
 
       try {
-        this.ws = new WebSocket('ws://' + window.location.host + '/ws/tasks')
+        this._disconnected = false
+        this.ws = new WebSocket(apiService.get_websocket_url())
 
         this.ws.onmessage = (event) => {
           try {
@@ -663,16 +709,18 @@ export const useTaskStore = defineStore('task', {
       try {
         const result = await apiService.delete_task(task_id)
         if (result.success && result.data) {
-          const response_data = result.data.data || result.data
-          if (response_data.code === 0) {
+          const response = result.data
+          if (response.code === 0) {
             const idx = this.tasks.findIndex(t => t.task_id === task_id)
             if (idx > -1) this.tasks.splice(idx, 1)
+            const expiredIdx = this.expired_tasks.findIndex(t => t.task_id === task_id)
+            if (expiredIdx > -1) this.expired_tasks.splice(expiredIdx, 1)
             this.error = null
             this.error_msg = ''
             return true
           }
-          this.error = String(response_data.code)
-          this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '删除失败'
+          this.error = String(response.code)
+          this.error_msg = ERROR_MESSAGES[response.code] || response.message || '删除失败'
           return false
         }
         this.error = result.error
@@ -685,12 +733,26 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
+    async delete_all_expired() {
+      const result = await apiService.delete_expired_tasks()
+      if (result.success && result.data?.code === 0) {
+        const deletedCount = result.data.data?.deleted_count || 0
+        this.expired_tasks = []
+        this.error = null
+        this.error_msg = ''
+        return deletedCount
+      }
+      this.error = result.data?.code ? String(result.data.code) : result.error
+      this.error_msg = result.data?.message || result.error || '清空过期日程失败'
+      return null
+    },
+
     async toggleTaskStatus(task) {
       const task_id = task.task_id || task.id
       const currentStatus = task.status || 'pending'
       if (currentStatus === 'expired') return false
 
-      const newStatus = currentStatus === 'completed' ? 'pending' : 'completed'
+      const newStatus = currentStatus === 'completed' ? 'scheduled' : 'completed'
 
       const idx = this.tasks.findIndex(t => (t.task_id || t.id) === task_id)
       if (idx > -1) {
@@ -700,15 +762,17 @@ export const useTaskStore = defineStore('task', {
       try {
         const result = await apiService.update_task_status(task_id, newStatus)
         if (result.success && result.data) {
-          const response_data = result.data.data || result.data
-          if (response_data.code === 0) {
+          const response = result.data
+          if (response.code === 0) {
+            this.error = null
+            this.error_msg = ''
             return true
           }
           if (idx > -1) {
             this.tasks[idx] = { ...this.tasks[idx], status: currentStatus }
           }
-          this.error = String(response_data.code)
-          this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '状态更新失败'
+          this.error = String(response.code)
+          this.error_msg = ERROR_MESSAGES[response.code] || response.message || '状态更新失败'
           return false
         }
         if (idx > -1) {

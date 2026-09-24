@@ -9,10 +9,9 @@
       <div
         v-if="isIdle"
         key="idle"
-        class="h-8 px-4 bg-black/80 backdrop-blur-xl rounded-full flex items-center justify-center border border-white/10 cursor-pointer hover:bg-black/70 transition-colors"
-        style="min-width: 48px;"
+        class="pointer-events-none h-0 w-0 overflow-hidden opacity-0"
+        aria-hidden="true"
       >
-        <div class="w-2 h-2 bg-neutral-500 rounded-full"></div>
       </div>
 
       <div
@@ -75,6 +74,41 @@
       </div>
 
       <div
+        v-else-if="isCandidate"
+        key="candidate"
+        class="px-6 py-4 bg-gradient-to-b from-neutral-900 to-neutral-950 backdrop-blur-2xl rounded-2xl border border-blue-500/30 shadow-2xl"
+        style="min-width: 340px;"
+      >
+        <div class="flex items-center gap-4 mb-4">
+          <div class="w-12 h-12 bg-blue-600/30 rounded-xl flex items-center justify-center">
+            <span class="text-2xl">📅</span>
+          </div>
+          <div>
+            <p class="text-blue-400 text-xs font-medium uppercase tracking-wider">New Schedule</p>
+            <p class="text-white text-lg font-semibold mt-0.5">{{ activeTask?.title }}</p>
+          </div>
+        </div>
+        <div class="bg-white/5 rounded-xl p-3 mb-4">
+          <p class="text-neutral-300 text-sm">{{ activeTask?.location || '未设置地点' }}</p>
+          <p class="text-neutral-500 text-xs mt-1 font-mono">{{ formatTime(activeTask?.start_time) }}</p>
+        </div>
+        <div class="flex gap-3">
+          <button
+            class="flex-1 px-4 py-2.5 bg-neutral-700 hover:bg-neutral-600 rounded-xl text-white text-sm font-semibold transition-colors"
+            @click="handleDismissCandidate"
+          >
+            忽略
+          </button>
+          <button
+            class="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-white text-sm font-semibold transition-colors"
+            @click="handleCreateCandidate"
+          >
+            确认添加
+          </button>
+        </div>
+      </div>
+
+      <div
         v-else-if="isReminder"
         key="reminder"
         class="px-6 py-4 bg-gradient-to-b from-neutral-900 to-neutral-950 backdrop-blur-2xl rounded-2xl border border-white/20 shadow-2xl"
@@ -95,22 +129,10 @@
         </div>
         <div class="flex gap-3">
           <button
-            class="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-500 rounded-xl text-white text-sm font-semibold transition-colors"
-            @click="handleCancel"
-          >
-            取消
-          </button>
-          <button
-            class="flex-1 px-4 py-2.5 bg-neutral-700 hover:bg-neutral-600 rounded-xl text-white text-sm font-semibold transition-colors"
-            @click="handlePostpone"
-          >
-            推迟
-          </button>
-          <button
             class="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-xl text-white text-sm font-semibold transition-colors"
-            @click="handleConfirm"
+            @click="handleAcknowledgeReminder"
           >
-            确认
+            知道了
           </button>
         </div>
       </div>
@@ -172,6 +194,7 @@ const store = useTaskStore()
 const isIdle = computed(() => store.island_state === 'idle')
 const isTracking = computed(() => store.island_state === 'tracking')
 const isWarning = computed(() => store.island_state === 'warning')
+const isCandidate = computed(() => store.island_state === 'candidate')
 const isReminder = computed(() => store.island_state === 'reminder')
 const isDetail = computed(() => store.island_state === 'detail')
 const activeTask = computed(() => store.active_task)
@@ -242,24 +265,16 @@ const handleConfirmAnyway = () => {
   store.island_state = 'tracking'
 }
 
-const handleCancel = () => {
+const handleDismissCandidate = () => {
   store.clearActiveTask()
 }
 
-const handlePostpone = () => {
-  if (activeTask.value?.start_time) {
-    const newStart = new Date(new Date(activeTask.value.start_time).getTime() + 15 * 60000)
-    const newEnd = new Date(new Date(activeTask.value.end_time).getTime() + 15 * 60000)
-    store.setActiveTask({
-      ...activeTask.value,
-      start_time: newStart.toISOString(),
-      end_time: newEnd.toISOString()
-    })
-  }
+const handleCreateCandidate = async () => {
+  await store.create_task_from_active()
 }
 
-const handleConfirm = async () => {
-  await store.create_task_from_active()
+const handleAcknowledgeReminder = () => {
+  store.acknowledge_reminder()
 }
 
 const handleDetailCancel = () => {

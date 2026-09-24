@@ -1,12 +1,11 @@
 # 日程猎人 (Schedule Hunter)
 
-> AIGC 驱动的全域日程管理基建 —— 利用系统级无障碍嗅探与蓝心大模型，实现日程零感录入。
+> AIGC 驱动的全域日程管理基建 —— 利用系统级无障碍嗅探与大模型，实现日程零感录入。
 
-[![AIGC 创新赛参赛项目](https://img.shields.io/badge/AIGC-创新赛-6C63FF?style=flat-square)](https://)
+
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python)](https://www.python.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4-4FC08D?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![Capacitor](https://img.shields.io/badge/Capacitor-8.3-5364FA?style=flat-square)](https://capacitorjs.com/)
-[![BlueLM API](https://img.shields.io/badge/BlueLM-vivo-00A8E8?style=flat-square)](https://developer.vivo.com.cn/)
 
 ---
 
@@ -31,7 +30,7 @@
 **日程猎人** 是一款面向未来的智能日程管理应用，核心特点：
 
 - **零感录入**：用户只需输入自然语言（如"明天下午3点开会"），AI 自动解析时间、地点、参与者
-- **AIGC 驱动**：集成 vivo 蓝心大模型（BlueLM），实现意图识别与时间提取
+- **AIGC 驱动**：通过通用 LLM 接口实现意图识别与时间提取
 - **全域管理**：支持 Web、移动端（Android）多端同步
 - **冲突预警**：智能检测日程冲突并提供解决方案
 - **灵动岛集成**：Android 端支持灵动岛实时状态展示与快捷操作
@@ -77,8 +76,7 @@
 
 | 服务 | 用途 |
 |------|------|
-| vivo BlueLM (Doubao-Seed-2.0-lite) | 自然语言时间解析 |
-| BlueLM API | <https://api-ai.vivo.com.cn/v1/chat/completions> |
+| OpenAI 兼容 LLM 接口 | 自然语言时间解析、意图识别与信息提取 |
 
 ---
 
@@ -131,13 +129,10 @@ touch .env
 ### 2. 填写配置内容
 
 ```bash
-# ========== 必填：API Key 配置 ==========
-# 蓝心大模型 API Key（必填）
-# 请访问 https://developer.vivo.com.cn/ 获取您的 API Key
-BLUELM_API_KEY=your_bluelm_api_key_here
-
-# 通用 LLM API Key（可选，若与 BLUELM_API_KEY 相同可省略）
+# ========== 必填：LLM 配置 ==========
 LLM_API_KEY=your_llm_api_key_here
+LLM_API_URL=https://your-llm-provider.example/v1/chat/completions
+LLM_MODEL=your_model_name
 
 # ========== 可选：服务配置 ==========
 # 服务地址和端口
@@ -151,13 +146,11 @@ DATABASE_URL=sqlite:///./data/schedule.db
 CORS_ORIGINS=*
 ```
 
-### 3. 获取 BlueLM API Key
+### 3. 配置 LLM 服务
 
-1. 访问 [vivo 开发者平台](https://developer.vivo.com.cn/)
-2. 注册/登录开发者账号
-3. 进入「蓝心大模型 API 服务」
-4. 创建应用并获取 API Key
-5. 将 API Key 填入 `.env` 文件的 `BLUELM_API_KEY`
+1. 选择支持 OpenAI 兼容 Chat Completions 接口的模型服务。
+2. 获取服务地址、API Key 和模型名称。
+3. 将对应值填入 `.env` 文件的 `LLM_API_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。
 
 ### 4. 前端局域网配置（重点排坑）
 
@@ -445,7 +438,7 @@ schedulemanneger/
 │       │   └── response.py         # 响应模型
 │       └── services/               # 业务逻辑层
 │           ├── parse_service.py    # 解析服务（LLM + Fallback）
-│           ├── llm_service.py      # BlueLM 调用封装
+│           ├── llm_service.py      # 通用 LLM 调用封装
 │           ├── task_service.py     # 任务业务逻辑
 │           ├── conflict_service.py # 冲突检测引擎
 │           └── reminder_service.py  # 提醒调度器
@@ -582,13 +575,13 @@ adb reverse tcp:5173 tcp:5173
 
 1. 或直接使用 Android Studio 的模拟器内置地址 `10.0.2.2` 访问本机
 
-### Q3: BlueLM API 调用失败
+### Q3: LLM API 调用失败
 
 **排查步骤**：
 
-1. 检查 `.env` 文件中的 `BLUELM_API_KEY` 是否正确
+1. 检查 `.env` 文件中的 `LLM_API_KEY`、`LLM_API_URL` 和 `LLM_MODEL` 是否正确
 2. 确认 API Key 已激活且有可用配额
-3. 检查网络是否能访问 `api-ai.vivo.com.cn`
+3. 检查网络是否能访问所配置的模型服务地址
 
 ### Q4: 数据库初始化失败
 
@@ -621,7 +614,7 @@ mkdir -p data logs
 
 - **赛事**：AIGC 创新赛
 - **项目**：日程猎人 (Schedule Hunter)
-- **技术栈**：Vue 3 + FastAPI + SQLite + BlueLM + Capacitor
+- **技术栈**：Vue 3 + FastAPI + SQLite + 通用 LLM + Capacitor
 
 ---
 
@@ -633,7 +626,6 @@ mkdir -p data logs
 
 ## 致谢 (Acknowledgments)
 
-- [vivo 开发者平台](https://developer.vivo.com.cn/) - 蓝心大模型 API
 - [Vue.js](https://vuejs.org/) - 前端框架
 - [FastAPI](https://fastapi.tiangolo.com/) - Python Web 框架
 - [Capacitor](https://capacitorjs.com/) - 跨平台解决方案

@@ -113,22 +113,38 @@ class TaskRepository:
 
         try:
             now = datetime.now(timezone(timedelta(hours=8)))
-            future_time = now + timedelta(minutes=minutes_threshold)
-
             cursor.execute("""
                 SELECT * FROM tasks
                 WHERE status = 'scheduled'
-                AND is_reminded = 0
-                AND start_time > ?
-                AND start_time <= ?
-            """, (now.isoformat(), future_time.isoformat()))
+            """)
 
             rows = cursor.fetchall()
             tasks = []
             for row in rows:
                 task = dict(row)
-                task["participants"] = json.loads(task["participants"])
-                task["reminder_policy"] = json.loads(task["reminder_policy"])
+                task["participants"] = json.loads(task["participants"] or "[]")
+                policy = json.loads(task["reminder_policy"] or "{}")
+                if not policy.get("enabled", True):
+                    continue
+                start_dt = datetime.fromisoformat(task["start_time"])
+                end_dt = datetime.fromisoformat(task["end_time"])
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=now.tzinfo)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=now.tzinfo)
+                if end_dt < now:
+                    continue
+                minutes_left = (start_dt - now).total_seconds() / 60
+                sent_offsets = json.loads(task.get("reminded_offsets") or "[]")
+                configured = [int(value) for value in policy.get("offset_minutes", [30, 10, 5])]
+                due_offsets = [value for value in configured if 0 < minutes_left <= value and value not in sent_offsets]
+                due_offset = min(due_offsets) if due_offsets else None
+                if -1 <= minutes_left <= 0 and 0 not in sent_offsets:
+                    due_offset = 0
+                if due_offset is None or minutes_left > minutes_threshold:
+                    continue
+                task["reminder_policy"] = policy
+                task["due_offset_minutes"] = due_offset
                 tasks.append(task)
 
             log_with_trace(logger, "INFO", f"待提醒任务：{len(tasks)}个", "")
@@ -141,11 +157,21 @@ class TaskRepository:
         finally:
             conn.close()
 
-    def mark_reminded(self, task_id: str) -> bool:
+    def mark_reminded(self, task_id: str, offset_minutes: int) -> bool:
         conn = self.db.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("UPDATE tasks SET is_reminded = 1 WHERE task_id = ?", (task_id,))
+            cursor.execute("SELECT reminded_offsets FROM tasks WHERE task_id = ?", (task_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            offsets = json.loads(row["reminded_offsets"] or "[]")
+            if offset_minutes not in offsets:
+                offsets.append(offset_minutes)
+            cursor.execute(
+                "UPDATE tasks SET reminded_offsets = ?, is_reminded = ? WHERE task_id = ?",
+                (json.dumps(offsets), 1 if offset_minutes == 0 else 0, task_id)
+            )
             conn.commit()
             return cursor.rowcount > 0
         except Exception as e:
@@ -171,7 +197,7 @@ class TaskRepository:
         conn = self.db.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT task_id, end_time FROM tasks WHERE status = 'pending'")
+            cursor.execute("SELECT task_id, end_time FROM tasks WHERE status IN ('scheduled', 'pending')")
             rows = cursor.fetchall()
 
             tz = timezone(timedelta(hours=8))
@@ -225,5 +251,21 @@ class TaskRepository:
             log_with_trace(logger, "ERROR", f"删除任务失败：{str(e)}", trace_id)
             return False
 
+        finally:
+            conn.close()
+
+    def delete_expired_tasks(self, trace_id: str) -> int:
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM tasks WHERE status = 'expired'")
+            deleted_count = cursor.rowcount
+            conn.commit()
+            log_with_trace(logger, "INFO", f"已清空过期任务：{deleted_count}个", trace_id)
+            return deleted_count
+        except Exception as e:
+            conn.rollback()
+            log_with_trace(logger, "ERROR", f"清空过期任务失败：{str(e)}", trace_id)
+            raise
         finally:
             conn.close()

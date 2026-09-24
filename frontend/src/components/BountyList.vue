@@ -1,90 +1,64 @@
 <template>
-  <div class="bg-neutral-900/50 rounded-2xl p-4 border border-white/5">
-    <div class="flex items-center justify-between mb-4">
-      <h3 class="text-white font-semibold">今日悬赏</h3>
-      <span class="text-xs text-neutral-500 font-mono">{{ tasks.length }} TASKS</span>
+  <div>
+    <div v-if="tasks.length === 0" class="empty-state">
+      <span class="empty-line"></span>
+      <p>{{ emptyText }}</p>
     </div>
 
-    <div v-if="tasks.length === 0" class="text-center py-8">
-      <div class="w-12 h-12 mx-auto mb-3 rounded-full bg-neutral-800/50 flex items-center justify-center">
-        <span class="text-2xl">🎯</span>
-      </div>
-      <p class="text-neutral-500 text-sm">暂无任务</p>
-    </div>
-
-    <div v-else class="space-y-3">
-      <div
-        v-for="task in tasks"
-        :key="task.id"
-        @click="!isExpired(task) && trackTask(task)"
-        class="bg-neutral-800/50 rounded-xl p-3 border border-white/5 hover:border-green-500/30 transition-all cursor-pointer group"
-        :class="{ 'opacity-50': isCompleted(task) }"
+    <div v-else class="timeline-list">
+      <article
+        v-for="task in sortedTasks"
+        :key="task.task_id || task.id"
+        class="timeline-row group"
+        :class="{ 'timeline-row--muted': isCompleted(task) || isExpired(task) }"
       >
-        <div class="flex items-start gap-3">
-          <input
-            type="checkbox"
-            :checked="isCompleted(task)"
-            :disabled="isExpired(task)"
-            @click.stop="toggleStatus(task)"
-            class="w-5 h-5 rounded border-neutral-600 bg-neutral-700 text-green-500 focus:ring-green-500 focus:ring-offset-0 cursor-pointer mt-1"
-          />
-
-          <div
-            class="w-10 h-10 rounded-lg flex items-center justify-center font-mono text-xs flex-shrink-0"
-            :class="getTimeSlotClass(task)"
-          >
-            {{ formatRelativeTime(task.start_time) }}
-          </div>
-
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2 mb-1">
-              <h4
-                class="text-white font-medium text-sm truncate"
-                :class="{ 'line-through text-neutral-500': isCompleted(task) }"
-              >
-                {{ task.title }}
-              </h4>
-              <span
-                v-if="isExpired(task)"
-                class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0 bg-red-500/20 text-red-400"
-              >
-                已过期
-              </span>
-              <span
-                v-else
-                class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0"
-                :class="getDifficultyClass(task)"
-              >
-                {{ getDifficultyLabel(task) }}
-              </span>
-            </div>
-
-            <div v-if="task.location" class="flex items-center gap-1 text-xs text-neutral-500">
-              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+        <button
+          type="button"
+          class="timeline-content"
+          :disabled="isExpired(task)"
+          @click="!isExpired(task) && trackTask(task)"
+        >
+          <span class="timeline-dot" :class="dotClass(task)"></span>
+          <time class="timeline-time">{{ formatTime(task.start_time) }}</time>
+          <span class="min-w-0 flex-1">
+            <span class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span class="task-title" :class="{ 'line-through': isCompleted(task) }">{{ task.title }}</span>
+              <span v-if="isExpired(task)" class="status-text text-red-400">已过期</span>
+              <span v-else-if="isCompleted(task)" class="status-text text-emerald-400">已完成</span>
+              <span v-else-if="task.is_conflict" class="status-text text-red-400">有冲突</span>
+              <span v-else-if="isStartingSoon(task)" class="status-text text-amber-400">即将开始</span>
+            </span>
+            <span class="task-meta">
+              <svg v-if="task.location" class="h-3.5 w-3.5 flex-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 21s6-5.1 6-11a6 6 0 10-12 0c0 5.9 6 11 6 11z" />
+                <circle cx="12" cy="10" r="2" stroke-width="1.8" />
               </svg>
-              <span class="truncate">{{ task.location }}</span>
-            </div>
-          </div>
+              {{ task.location || formatDuration(task) }}
+            </span>
+          </span>
+        </button>
 
-          <div class="w-6 h-6 rounded-full bg-green-500/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-            <svg class="w-3 h-3 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
-
+        <div class="row-actions">
           <button
-            @click.stop="deleteTask(task)"
-            class="w-6 h-6 rounded-full bg-red-500/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/30"
-            title="删除任务"
+            v-if="!isExpired(task)"
+            type="button"
+            class="row-action hover:text-emerald-400"
+            :aria-label="isCompleted(task) ? '恢复日程' : '标记完成'"
+            :title="isCompleted(task) ? '恢复日程' : '标记完成'"
+            @click="toggleStatus(task)"
           >
-            <svg class="w-3 h-3 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v1M8 5h8" />
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="8" stroke-width="1.8" />
+              <path d="M8.5 12l2.3 2.3 4.8-5" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" />
+            </svg>
+          </button>
+          <button type="button" class="row-action hover:text-red-400" aria-label="删除日程" title="删除日程" @click="deleteTask(task)">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M5 7h14M9 7V4h6v3m2 0l-1 13H8L7 7m3 4v5m4-5v5" />
             </svg>
           </button>
         </div>
-      </div>
+      </article>
     </div>
   </div>
 </template>
@@ -94,75 +68,49 @@ import { computed } from 'vue'
 import { useTaskStore } from '@/stores/useTaskStore'
 
 const props = defineProps({
-  tasks: {
-    type: Array,
-    default: () => []
-  }
+  tasks: { type: Array, default: () => [] },
+  title: { type: String, default: '日程' },
+  emptyText: { type: String, default: '暂无日程' }
 })
 
 const store = useTaskStore()
+const sortedTasks = computed(() => props.tasks.slice().sort((a, b) => new Date(a.start_time) - new Date(b.start_time)))
 
-function formatRelativeTime(isoString) {
-  if (!isoString) return '--:--'
-  const now = new Date()
-  const date = new Date(isoString)
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const tomorrow = new Date(today.getTime() + 86400000)
-  const taskDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-
-  if (taskDate.getTime() === today.getTime()) {
-    return `今天${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-  } else if (taskDate.getTime() === tomorrow.getTime()) {
-    return `明天${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-  } else {
-    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-    const dayLabel = weekdays[date.getDay()]
-    return `${dayLabel}${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-  }
+function formatTime(value) {
+  if (!value) return '--:--'
+  const date = new Date(value)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
-function getTimeSlotClass(task) {
-  const hour = new Date(task.start_time).getHours()
-  if (hour < 12) {
-    return 'bg-amber-500/10 text-amber-400'
-  } else if (hour < 18) {
-    return 'bg-blue-500/10 text-blue-400'
-  } else {
-    return 'bg-purple-500/10 text-purple-400'
-  }
+function formatDuration(task) {
+  if (!task.start_time || !task.end_time) return '未设置地点'
+  const minutes = Math.max(0, Math.round((new Date(task.end_time) - new Date(task.start_time)) / 60000))
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return `${hours} 小时${rest ? ` ${rest} 分钟` : ''}`
 }
 
-function getDifficultyClass(task) {
-  if (task.is_conflict) {
-    return 'bg-red-500/20 text-red-400'
-  }
-  if (task.has_warning) {
-    return 'bg-yellow-500/20 text-yellow-400'
-  }
-  return 'bg-green-500/20 text-green-400'
-}
-
-function getDifficultyLabel(task) {
-  if (task.is_conflict) {
-    return '冲突'
-  }
-  if (task.has_warning) {
-    return '警告'
-  }
-  return '正常'
-}
-
-function isCompleted(task) {
-  return task.status === 'completed'
-}
+function isCompleted(task) { return task.status === 'completed' }
 
 function isExpired(task) {
   if (task.status === 'expired') return true
   if (!task.start_time) return false
-  const now = Date.now()
-  const startTime = new Date(task.start_time).getTime()
-  const endTime = task.end_time ? new Date(task.end_time).getTime() : startTime + 3600000
-  return endTime < now
+  const end = new Date(task.end_time || task.start_time).getTime()
+  return Number.isFinite(end) && end < Date.now() && !isCompleted(task)
+}
+
+function isStartingSoon(task) {
+  const diff = new Date(task.start_time).getTime() - Date.now()
+  return diff > 0 && diff <= 30 * 60 * 1000
+}
+
+function dotClass(task) {
+  if (isExpired(task)) return 'bg-red-500/70'
+  if (isCompleted(task)) return 'bg-emerald-400'
+  if (task.is_conflict) return 'bg-red-500 shadow-red-500/40'
+  if (isStartingSoon(task)) return 'bg-amber-400 shadow-amber-400/40'
+  return 'bg-blue-500 shadow-blue-500/40'
 }
 
 function trackTask(task) {
@@ -170,21 +118,36 @@ function trackTask(task) {
   store.island_state = 'detail'
 }
 
-async function toggleStatus(task) {
-  await store.toggleTaskStatus(task)
-}
+async function toggleStatus(task) { await store.toggleTaskStatus(task) }
 
 async function deleteTask(task) {
-  if (!confirm(`确定要删除任务"${task.title}"吗？`)) {
-    return
-  }
-  try {
-    const result = await store.delete_task(task.task_id || task.id)
-    if (result) {
-      console.log('✅ 任务删除成功')
-    }
-  } catch (error) {
-    console.error('❌ 删除失败:', error)
-  }
+  if (!confirm(`确定要删除日程“${task.title}”吗？`)) return
+  await store.delete_task(task.task_id || task.id)
 }
 </script>
+
+<style scoped>
+.empty-state { display: flex; align-items: center; gap: 1rem; min-height: 5rem; color: #666b76; font-size: .875rem; }
+.empty-line { width: 1px; height: 3rem; background: linear-gradient(to bottom, rgba(59,130,246,.6), transparent); }
+.timeline-list { position: relative; }
+.timeline-list::before { position: absolute; top: 1.75rem; bottom: 1.75rem; left: .28rem; width: 1px; content: ''; background: linear-gradient(to bottom, rgba(82,124,230,.44), rgba(255,255,255,.06)); }
+.timeline-row { position: relative; display: flex; align-items: stretch; border-bottom: 1px solid rgba(255,255,255,.065); transition: background .2s; }
+.timeline-row:last-child { border-bottom: 0; }
+.timeline-row:hover { background: linear-gradient(90deg, transparent, rgba(255,255,255,.018), transparent); }
+.timeline-row--muted { opacity: .58; }
+.timeline-content { display: grid; min-width: 0; flex: 1; grid-template-columns: 1.25rem 4.8rem minmax(0,1fr); align-items: start; padding: 1.35rem 0; text-align: left; }
+.timeline-content:disabled { cursor: default; }
+.timeline-dot { z-index: 1; width: .58rem; height: .58rem; margin-top: .5rem; border-radius: 999px; box-shadow: 0 0 18px currentColor; }
+.timeline-time { color: #f5f5f5; font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.55rem; }
+.task-title { color: #f5f5f5; font-size: 1rem; font-weight: 600; line-height: 1.55rem; }
+.status-text { font-size: .68rem; font-weight: 600; letter-spacing: .04em; }
+.task-meta { display: flex; align-items: center; gap: .35rem; margin-top: .35rem; color: #777c87; font-size: .8rem; }
+.row-actions { display: flex; align-items: center; gap: .1rem; padding-left: .45rem; }
+.row-action { display: flex; width: 2rem; height: 2rem; align-items: center; justify-content: center; border-radius: 999px; color: #555b66; transition: color .2s, background .2s; }
+.row-action:hover { background: rgba(255,255,255,.045); }
+@media (max-width: 480px) {
+  .timeline-content { grid-template-columns: 1.1rem 4rem minmax(0,1fr); }
+  .timeline-time, .task-title { font-size: .92rem; }
+  .row-actions { flex-direction: column; justify-content: center; padding-left: .2rem; }
+}
+</style>

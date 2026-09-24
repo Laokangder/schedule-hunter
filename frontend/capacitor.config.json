@@ -3,7 +3,6 @@
   "appName": "ScheduleHunter",
   "webDir": "dist",
   "server": {
-    "cleartext": true,
-    "url": "http://192.168.2.8:5173"
+    "cleartext": true
   }
 }

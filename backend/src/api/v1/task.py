@@ -138,8 +138,8 @@ async def conflict_check(request: Request, body: ConflictCheckRequest):
     trace_id = request.state.trace_id
     try:
         conflict_data = conflict_service.check_conflict(
-            candidate=body.candidate,
-            scope=body.scope,
+            candidate=body.candidate.model_dump(),
+            scope=body.scope.model_dump(),
             trace_id=trace_id
         )
 
@@ -156,6 +156,24 @@ async def conflict_check(request: Request, body: ConflictCheckRequest):
         return BaseResponse(code=2002, message="冲突检测失败", data={}, trace_id=trace_id)
 
 
+@router.delete("/api/v1/tasks/expired")
+async def delete_expired_tasks(request: Request):
+    trace_id = request.state.trace_id
+    try:
+        deleted_count = task_service.delete_expired_tasks(trace_id)
+        from src.api.v1.websocket import broadcast_task_update
+        await broadcast_task_update("bulk_expired", "deleted")
+        return BaseResponse(
+            code=0,
+            message="expired tasks deleted",
+            data={"deleted_count": deleted_count},
+            trace_id=trace_id
+        )
+    except Exception as e:
+        log_with_trace(logger, "ERROR", f"清空过期任务异常：{repr(e)}", trace_id)
+        return BaseResponse(code=5000, message="清空过期任务失败", data={}, trace_id=trace_id)
+
+
 @router.delete("/api/v1/tasks/{task_id}")
 async def delete_task(request: Request, task_id: str):
     """删除指定任务"""
@@ -165,6 +183,8 @@ async def delete_task(request: Request, task_id: str):
         if not result:
             return BaseResponse(code=4001, message="任务不存在或已删除", data={}, trace_id=trace_id)
 
+        from src.api.v1.websocket import broadcast_task_update
+        await broadcast_task_update(task_id, "deleted")
         return BaseResponse(
             code=0,
             message="deleted",
@@ -180,7 +200,7 @@ async def delete_task(request: Request, task_id: str):
 @router.patch("/api/v1/tasks/{task_id}/status")
 async def update_task_status(request: Request, task_id: str, body: UpdateStatusRequest):
     trace_id = request.state.trace_id
-    valid_statuses = ["pending", "completed", "expired"]
+    valid_statuses = ["scheduled", "pending", "completed", "expired"]
     if body.status not in valid_statuses:
         return BaseResponse(code=4002, message=f"无效状态：{body.status}", data={}, trace_id=trace_id)
 
@@ -189,6 +209,8 @@ async def update_task_status(request: Request, task_id: str, body: UpdateStatusR
         if not result:
             return BaseResponse(code=4001, message="任务不存在", data={}, trace_id=trace_id)
 
+        from src.api.v1.websocket import broadcast_task_update
+        await broadcast_task_update(task_id, body.status)
         return BaseResponse(
             code=0,
             message="updated",

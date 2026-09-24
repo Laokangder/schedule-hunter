@@ -15,14 +15,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./schedule.db"  # 兼容原有字段
 
     DEFAULT_DURATION_MINUTES: int = 60
-    # 蓝心大模型配置（从环境变量读取，请勿硬编码）
-    BLUELM_API_KEY: Optional[str] = None
-    BLUELM_API_URL: Optional[str] = "https://api-ai.vivo.com.cn/v1/chat/completions"
-    BLUELM_TIMEOUT: int = 30
     # 通用 LLM 配置（从环境变量读取，请勿硬编码）
     LLM_API_KEY: Optional[str] = None
-    LLM_API_URL: Optional[str] = "https://api-ai.vivo.com.cn/v1/chat/completions"
-    LLM_MODEL: str = "Doubao-Seed-2.0-lite"
+    LLM_API_URL: Optional[str] = None
+    LLM_MODEL: str = ""
 
     # ========== 通用配置（兼容原有字段） ==========
     api_key: Optional[str] = None  # 兼容原有多余字段

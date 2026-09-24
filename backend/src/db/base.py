@@ -30,6 +30,7 @@ class DBConnection:
             input_type TEXT,
             status TEXT DEFAULT 'scheduled',
             is_reminded INTEGER DEFAULT 0,
+            reminded_offsets TEXT DEFAULT '[]',
             created_at TEXT
         )
         ''')
@@ -41,6 +42,11 @@ class DBConnection:
 
         try:
             cursor.execute("ALTER TABLE tasks ADD COLUMN is_reminded INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN reminded_offsets TEXT DEFAULT '[]'")
         except sqlite3.OperationalError:
             pass
 
