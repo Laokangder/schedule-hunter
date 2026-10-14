@@ -210,6 +210,7 @@ async function handleAdd() {
         }
 
         store.tasks.push(task)
+        await store.register_task_notifications({ ...task, reminder_policy: task_data.reminder_policy })
         store.setActiveTask(task)
         store.island_state = 'tracking'
 

@@ -65,10 +65,11 @@
             调整时间
           </button>
           <button
-            class="flex-1 px-3 py-2 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 rounded-lg text-blue-300 text-xs font-medium transition-colors"
+            class="flex-1 px-3 py-2 bg-blue-500/20 hover:bg-blue-500/30 border border-blue-500/30 rounded-lg text-blue-300 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="isConfirmingConflict"
             @click="handleConfirmAnyway"
           >
-            确认创建
+            {{ isConfirmingConflict ? '创建中…' : '确认创建' }}
           </button>
         </div>
       </div>
@@ -186,10 +187,11 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useTaskStore } from '@/stores/useTaskStore'
 
 const store = useTaskStore()
+const isConfirmingConflict = ref(false)
 
 const isIdle = computed(() => store.island_state === 'idle')
 const isTracking = computed(() => store.island_state === 'tracking')
@@ -260,9 +262,15 @@ const handleReschedule = () => {
   store.clearActiveTask()
 }
 
-const handleConfirmAnyway = () => {
-  store.is_conflict = false
-  store.island_state = 'tracking'
+const handleConfirmAnyway = async () => {
+  if (isConfirmingConflict.value) return
+
+  isConfirmingConflict.value = true
+  try {
+    await store.confirm_conflicting_task()
+  } finally {
+    isConfirmingConflict.value = false
+  }
 }
 
 const handleDismissCandidate = () => {

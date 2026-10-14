@@ -137,6 +137,39 @@
           </div>
           <p class="mt-4 text-xs leading-5 text-neutral-600">地址会保存在本机，重新打开 APK 后仍然有效。不要填写 localhost，因为它在手机上表示手机本身。</p>
         </div>
+        <div class="border-b border-white/[0.07] py-6">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <p class="font-medium text-white">本地日程通知</p>
+              <p class="mt-1 text-sm leading-6 text-neutral-500">授权后，即使应用退到后台，也会按日程时间在手机上提醒。</p>
+            </div>
+            <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="notificationStatusClass">{{ notificationStatusLabel }}</span>
+          </div>
+          <div class="mt-4 flex items-center gap-4">
+            <button v-if="store.notification_supported && store.notification_permission !== 'granted'" type="button" class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500" @click="enableNotifications">开启通知</button>
+            <button v-else-if="store.notification_supported && store.notification_exact_alarm !== 'granted'" type="button" class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500" @click="enableExactAlarm">开启准时提醒</button>
+            <button v-else-if="store.notification_supported" type="button" class="rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-neutral-200 transition hover:bg-white/5" @click="syncNotifications">重新同步通知</button>
+            <span v-if="notificationMessage" class="text-sm" :class="store.notification_error ? 'text-red-400' : 'text-neutral-500'">{{ notificationMessage }}</span>
+          </div>
+          <p class="mt-4 text-xs leading-5 text-neutral-600">应用启动时会自动恢复、清理重复通知；删除、完成或过期日程时会同步取消通知。</p>
+        </div>
+        <div class="border-b border-white/[0.07] py-6">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <p class="font-medium text-white">系统通知监听</p>
+              <p class="mt-1 text-sm leading-6 text-neutral-500">读取其他应用通知中的日程文字，并交给现有 AI 解析；验证码、密码和账户类内容会在手机本地直接过滤。</p>
+            </div>
+            <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="systemNotificationStatusClass">{{ systemNotificationStatusLabel }}</span>
+          </div>
+          <div class="mt-4 flex flex-wrap items-center gap-4">
+            <button v-if="store.system_notification_supported && !store.system_notification_permission" type="button" class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500" @click="enableSystemNotificationListener">前往授权</button>
+            <button v-else-if="store.system_notification_supported" type="button" class="rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-neutral-200 transition hover:bg-white/5" @click="toggleSystemNotificationListener">
+              {{ store.system_notification_enabled ? '暂停监听' : '恢复监听' }}
+            </button>
+            <span v-if="systemNotificationMessage" class="text-sm" :class="store.system_notification_error ? 'text-red-400' : 'text-neutral-500'">{{ systemNotificationMessage }}</span>
+          </div>
+          <p class="mt-4 text-xs leading-5 text-neutral-600">授权页中请选择“日程猎人”。后台收到的内容会先进入本机待处理队列，打开应用后生成候选日程，不会自动创建。</p>
+        </div>
       </section>
     </main>
 
@@ -166,9 +199,24 @@ const now = ref(Date.now())
 const backendAddress = ref('')
 const testingBackend = ref(false)
 const backendStatus = ref({ success: false, message: '' })
+const notificationMessage = ref('')
+const systemNotificationMessage = ref('')
 let clockTimer = null
 
 const platformLabel = apiService.is_native_app() ? 'APK' : 'Web'
+const notificationStatusLabel = computed(() => {
+  if (!store.notification_supported) return '仅 APK 可用'
+  if (store.notification_permission === 'granted') return store.notification_exact_alarm === 'granted' ? '已开启 · 准时提醒' : '已开启 · 系统可能延迟'
+  if (store.notification_permission === 'denied') return '已拒绝'
+  return '未授权'
+})
+const notificationStatusClass = computed(() => store.notification_permission === 'granted' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-neutral-500/10 text-neutral-400')
+const systemNotificationStatusLabel = computed(() => {
+  if (!store.system_notification_supported) return '仅 APK 可用'
+  if (!store.system_notification_permission) return '未授权'
+  return store.system_notification_enabled ? '监听中' : '已暂停'
+})
+const systemNotificationStatusClass = computed(() => store.system_notification_permission && store.system_notification_enabled ? 'bg-emerald-500/10 text-emerald-400' : 'bg-neutral-500/10 text-neutral-400')
 
 const unfinishedTasks = computed(() => (store.today_tasks || []).filter(task => !['completed', 'expired'].includes(task.status)))
 const unfinishedCount = computed(() => unfinishedTasks.value.length)
@@ -247,11 +295,47 @@ async function saveBackendAddress() {
 
 function handleNativeSniff(sourceText, inputType = 'manual') { return store.handle_native_sniff(sourceText, inputType) }
 
-onMounted(() => {
+function handleVisibilityChange() {
+  if (document.visibilityState !== 'visible') return
+  void store.refresh_notification_permission_state()
+  void store.refresh_system_notification_permission_state()
+}
+
+async function enableNotifications() {
+  const granted = await store.request_notification_permission()
+  notificationMessage.value = granted ? '通知已开启，现有日程已同步' : store.notification_error
+}
+
+async function enableExactAlarm() {
+  const granted = await store.request_exact_alarm_permission()
+  notificationMessage.value = granted ? '准时提醒已开启，通知已重建' : store.notification_error
+}
+
+async function syncNotifications() {
+  store._notifications_initialized = false
+  await store.initialize_local_notifications()
+  notificationMessage.value = store.notification_error || '通知已重新同步'
+}
+
+async function enableSystemNotificationListener() {
+  const opened = await store.open_system_notification_settings()
+  systemNotificationMessage.value = opened ? '请在系统列表中允许“日程猎人”，然后返回应用' : store.system_notification_error
+}
+
+async function toggleSystemNotificationListener() {
+  const nextEnabled = !store.system_notification_enabled
+  const changed = await store.set_system_notification_enabled(nextEnabled)
+  systemNotificationMessage.value = changed ? (nextEnabled ? '系统通知监听已恢复' : '系统通知监听已暂停') : store.system_notification_error
+}
+
+onMounted(async () => {
   window.handleNativeSniff = handleNativeSniff
   backendAddress.value = apiService.get_api_base_url()
   clockTimer = window.setInterval(() => { now.value = Date.now() }, 30000)
-  store.fetch_latest_tasks()
+  await store.fetch_latest_tasks()
+  await store.initialize_local_notifications()
+  await store.initialize_system_notification_listener()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   store.connect_web_socket()
   store._start_poll()
 })
@@ -259,6 +343,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (window.handleNativeSniff === handleNativeSniff) delete window.handleNativeSniff
   if (clockTimer) window.clearInterval(clockTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  void store.dispose_system_notification_listener()
   store.disconnect_web_socket()
 })
 </script>

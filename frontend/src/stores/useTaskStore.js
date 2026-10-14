@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia'
 import * as apiService from '@/services/apiService'
+import * as notificationService from '@/services/notificationService'
+import * as systemNotificationService from '@/services/systemNotificationService'
 import { localDateKey } from '@/utils/date'
+
+const processedSystemNotificationIds = new Set()
+let systemNotificationProcessingChain = Promise.resolve()
 
 // 错误码到中文消息的映射
 const ERROR_MESSAGES = {
@@ -37,6 +42,17 @@ export const useTaskStore = defineStore('task', {
     is_loading: false,
     error: null,
     error_msg: '',
+    notification_supported: notificationService.isSupported(),
+    notification_permission: notificationService.isSupported() ? 'prompt' : 'unavailable',
+    notification_exact_alarm: notificationService.isSupported() ? 'prompt' : 'unavailable',
+    notification_error: '',
+    _notifications_initialized: false,
+    system_notification_supported: systemNotificationService.isSupported(),
+    system_notification_permission: false,
+    system_notification_enabled: false,
+    system_notification_error: '',
+    _system_notification_listener_handle: null,
+    _system_notifications_initialized: false,
     reminder_threshold: 30 * 60 * 1000,
     _timer_id: null,
     _poll_interval_id: null,
@@ -167,6 +183,236 @@ export const useTaskStore = defineStore('task', {
         } else {
           this.expired_tasks.unshift(task)
         }
+        void notificationService.cancelTask(task).catch(error => {
+          console.error('Cancel expired task notification failed:', error)
+        })
+      }
+    },
+
+    async initialize_local_notifications() {
+      if (this._notifications_initialized || !this.notification_supported) return
+      this._notifications_initialized = true
+      try {
+        const permission = await notificationService.getPermissionState()
+        this.notification_permission = permission.display
+        this.notification_exact_alarm = permission.exact_alarm
+        if (permission.display !== 'granted') return
+
+        const result = await apiService.fetch_tasks()
+        if (result.success) {
+          const response = result.data?.data || result.data || {}
+          await notificationService.reconcileTasks(response.task_list || response.tasks || [])
+        }
+        this.notification_error = ''
+      } catch (error) {
+        this.notification_error = error.message || '通知初始化失败'
+        console.error('Initialize local notifications failed:', error)
+      }
+    },
+
+    async request_notification_permission() {
+      if (!this.notification_supported) return false
+      try {
+        const permission = await notificationService.requestPermission()
+        this.notification_permission = permission.display
+        this.notification_exact_alarm = permission.exact_alarm
+        if (permission.display === 'granted') {
+          const result = await apiService.fetch_tasks()
+          if (result.success) {
+            const response = result.data?.data || result.data || {}
+            await notificationService.reconcileTasks(response.task_list || response.tasks || [])
+          } else {
+            await Promise.all(this.tasks.map(task => notificationService.scheduleTask(task)))
+          }
+          this.notification_error = ''
+          return true
+        }
+        this.notification_error = '通知权限未开启，请在系统设置中允许通知'
+        return false
+      } catch (error) {
+        this.notification_error = error.message || '通知授权失败'
+        return false
+      }
+    },
+
+    async request_exact_alarm_permission() {
+      if (!this.notification_supported) return false
+      try {
+        const permission = await notificationService.requestExactAlarmPermission()
+        this.notification_exact_alarm = permission.exact_alarm
+        if (permission.exact_alarm === 'granted') {
+          this._notifications_initialized = false
+          await this.initialize_local_notifications()
+          this.notification_error = ''
+          return true
+        }
+        this.notification_error = '请在系统的“闹钟和提醒”设置中允许此应用'
+        return false
+      } catch (error) {
+        this.notification_error = error.message || '精确提醒授权失败'
+        return false
+      }
+    },
+
+    async refresh_notification_permission_state() {
+      if (!this.notification_supported) return
+      try {
+        const previousDisplay = this.notification_permission
+        const previousExact = this.notification_exact_alarm
+        const permission = await notificationService.getPermissionState()
+        this.notification_permission = permission.display
+        this.notification_exact_alarm = permission.exact_alarm
+        if (permission.display === 'granted' && (previousDisplay !== 'granted' || previousExact !== permission.exact_alarm)) {
+          this._notifications_initialized = false
+          await this.initialize_local_notifications()
+        }
+      } catch (error) {
+        console.error('Refresh notification permission failed:', error)
+      }
+    },
+
+    async initialize_system_notification_listener() {
+      if (!this.system_notification_supported) return
+      try {
+        const status = await systemNotificationService.getStatus()
+        this.system_notification_permission = !!status.granted
+        this.system_notification_enabled = !!status.enabled
+
+        if (!this._system_notification_listener_handle) {
+          this._system_notification_listener_handle = await systemNotificationService.addCaptureListener(event => {
+            this.handle_system_notification_event(event)
+          })
+        }
+
+        this._system_notifications_initialized = true
+        this.system_notification_error = ''
+        if (this.system_notification_permission && this.system_notification_enabled) {
+          await this.drain_system_notification_queue()
+        }
+      } catch (error) {
+        this.system_notification_error = error.message || '系统通知监听初始化失败'
+        console.error('Initialize system notification listener failed:', error)
+      }
+    },
+
+    async refresh_system_notification_permission_state() {
+      if (!this.system_notification_supported) return
+      try {
+        const status = await systemNotificationService.getStatus()
+        this.system_notification_permission = !!status.granted
+        this.system_notification_enabled = !!status.enabled
+        if (this.system_notification_permission && this.system_notification_enabled) {
+          await this.drain_system_notification_queue()
+        }
+      } catch (error) {
+        this.system_notification_error = error.message || '无法读取系统通知监听状态'
+      }
+    },
+
+    async open_system_notification_settings() {
+      try {
+        await systemNotificationService.openPermissionSettings()
+        return true
+      } catch (error) {
+        this.system_notification_error = error.message || '无法打开通知使用权设置'
+        return false
+      }
+    },
+
+    async set_system_notification_enabled(enabled) {
+      if (!this.system_notification_supported) return false
+      try {
+        const result = await systemNotificationService.setEnabled(enabled)
+        this.system_notification_enabled = !!result.enabled
+        if (this.system_notification_enabled && this.system_notification_permission) {
+          await this.drain_system_notification_queue()
+        }
+        this.system_notification_error = ''
+        return true
+      } catch (error) {
+        this.system_notification_error = error.message || '系统通知监听切换失败'
+        return false
+      }
+    },
+
+    handle_system_notification_event(event) {
+      systemNotificationProcessingChain = systemNotificationProcessingChain
+        .then(() => this._process_system_notification_event(event))
+        .catch(error => {
+          this.system_notification_error = error.message || '系统通知处理失败'
+          console.error('Process system notification failed:', error)
+        })
+      return systemNotificationProcessingChain
+    },
+
+    async _process_system_notification_event(event) {
+      const eventId = event?.event_id
+      const sourceText = event?.source_text?.trim()
+      if (!eventId || !sourceText || processedSystemNotificationIds.has(eventId)) return false
+      if (this.active_task || this.pending_task) return false
+
+      processedSystemNotificationIds.add(eventId)
+      if (processedSystemNotificationIds.size > 200) {
+        const oldest = processedSystemNotificationIds.values().next().value
+        processedSystemNotificationIds.delete(oldest)
+      }
+
+      const result = await this.sniffing_handler(sourceText, 'notification')
+      if (result?.success) {
+        await systemNotificationService.acknowledge([eventId])
+        this.system_notification_error = ''
+        return true
+      }
+
+      if (result?.retryable === false) {
+        await systemNotificationService.acknowledge([eventId])
+        this.system_notification_error = ''
+        return false
+      }
+
+      processedSystemNotificationIds.delete(eventId)
+      this.system_notification_error = result?.error || '后端暂时不可用，通知已保留等待重试'
+      return false
+    },
+
+    async drain_system_notification_queue() {
+      if (!this.system_notification_permission || !this.system_notification_enabled) return 0
+      if (this.active_task || this.pending_task) return 0
+      const notifications = await systemNotificationService.getPending()
+      for (const event of notifications) {
+        const createdCandidate = await this.handle_system_notification_event(event)
+        if (createdCandidate || this.active_task || this.pending_task || this.system_notification_error) break
+      }
+      return notifications.length
+    },
+
+    async dispose_system_notification_listener() {
+      if (this._system_notification_listener_handle) {
+        await this._system_notification_listener_handle.remove()
+        this._system_notification_listener_handle = null
+      }
+      this._system_notifications_initialized = false
+    },
+
+    async register_task_notifications(task) {
+      try {
+        const result = await notificationService.scheduleTask(task)
+        if (result.display) this.notification_permission = result.display
+        if (result.exact_alarm) this.notification_exact_alarm = result.exact_alarm
+        return result
+      } catch (error) {
+        this.notification_error = error.message || '通知注册失败'
+        console.error('Register task notifications failed:', error)
+        return null
+      }
+    },
+
+    async rebuild_task_notifications(task) {
+      try {
+        return await notificationService.rebuildTask(task)
+      } catch (error) {
+        this.notification_error = error.message || '通知改期重建失败'
+        return null
       }
     },
 
@@ -302,17 +548,17 @@ export const useTaskStore = defineStore('task', {
           } else {
             this.error = String(response_data.code)
             this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '解析失败'
-            return { success: false, error: this.error_msg }
+            return { success: false, error: this.error_msg, code: response_data.code, retryable: false }
           }
         } else {
           this.error = result.error
           this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
-          return { success: false, error: this.error_msg }
+          return { success: false, error: this.error_msg, retryable: true }
         }
       } catch (error) {
         this.error = error.message
         this.error_msg = ERROR_MESSAGES[parseInt(error.message)] || error.message
-        return { success: false, error: this.error_msg }
+        return { success: false, error: this.error_msg, retryable: true }
       }
     },
 
@@ -436,6 +682,9 @@ export const useTaskStore = defineStore('task', {
       this.ambiguities = []
       this.island_state = 'idle'
       this._stop_reminder_timer()
+      if (this.system_notification_permission && this.system_notification_enabled) {
+        Promise.resolve().then(() => this.drain_system_notification_queue())
+      }
     },
 
     clearActiveTask() {
@@ -542,6 +791,7 @@ export const useTaskStore = defineStore('task', {
             status: response_data.status || 'scheduled'
           }
           this.tasks.push(created_task)
+          await this.register_task_notifications(created_task)
           this.clear_active_task()
           this.fetch_latest_tasks()
           return created_task
@@ -584,12 +834,75 @@ export const useTaskStore = defineStore('task', {
             status: response_data.status || 'scheduled'
           }
           this.tasks.push(created_task)
+          await this.register_task_notifications(created_task)
           this.clear_active_task()
           return created_task
         }
         return null
       } catch (error) {
         this.error = error.message
+        return null
+      }
+    },
+
+    async confirm_conflicting_task() {
+      const conflict_task = this.pending_task || this.active_task
+      if (!conflict_task) {
+        this.error = '没有可创建的冲突日程'
+        this.error_msg = this.error
+        return null
+      }
+
+      const task_data = {
+        source_text: conflict_task.source_text || this.captured_text || '',
+        parsed: {
+          title: conflict_task.title,
+          start_time: conflict_task.start_time,
+          end_time: conflict_task.end_time,
+          location: conflict_task.location,
+          participants: conflict_task.participants || [],
+          timezone: conflict_task.timezone || 'Asia/Shanghai'
+        },
+        priority: conflict_task.priority || 'normal',
+        reminder_policy: conflict_task.reminder_policy,
+        meta: {
+          input_type: conflict_task.input_type || 'manual',
+          language: 'zh-CN'
+        }
+      }
+
+      try {
+        const result = await apiService.create_task(task_data)
+        const response = result.data || {}
+        const response_data = response.data || {}
+
+        if (!result.success || response.code !== 0 || !response_data.task_id) {
+          this.error = String(response.code || result.error || '3001')
+          this.error_msg = response.message || result.error || '任务创建失败，请重试'
+          return null
+        }
+
+        const created_task = {
+          ...conflict_task,
+          task_id: response_data.task_id,
+          status: response_data.status || 'scheduled',
+          is_conflict: false,
+          conflict_detail: '',
+          conflict_type: null,
+          conflict_level: null,
+          suggestions: []
+        }
+
+        this.tasks.push(created_task)
+        await this.register_task_notifications(created_task)
+        this.error = null
+        this.error_msg = ''
+        this.clear_active_task()
+        await this.fetch_latest_tasks()
+        return created_task
+      } catch (error) {
+        this.error = error.message
+        this.error_msg = error.message || '任务创建失败，请重试'
         return null
       }
     },
@@ -610,6 +923,7 @@ export const useTaskStore = defineStore('task', {
       }
       this.tasks.push(new_task)
       this._schedule_reminder(new_task)
+      void this.register_task_notifications(new_task)
       return new_task
     },
 
@@ -624,6 +938,7 @@ export const useTaskStore = defineStore('task', {
       }
       const expiredIndex = this.expired_tasks.findIndex(t => t.id === task_id || t.task_id === task_id)
       if (expiredIndex > -1) this.expired_tasks.splice(expiredIndex, 1)
+      void notificationService.cancelTask(task_id)
     },
 
     connect_web_socket() {
@@ -635,7 +950,7 @@ export const useTaskStore = defineStore('task', {
         this._disconnected = false
         this.ws = new WebSocket(apiService.get_websocket_url())
 
-        this.ws.onmessage = (event) => {
+        this.ws.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data)
             if (data.type === 'REMINDER') {
@@ -650,7 +965,9 @@ export const useTaskStore = defineStore('task', {
               }
               this.fetch_latest_tasks()
             } else if (data.type === 'TASK_UPDATED') {
-              this.fetch_latest_tasks()
+              await this.fetch_latest_tasks()
+              this._notifications_initialized = false
+              await this.initialize_local_notifications()
             } else if (data.type === 'schedule_sniff' && data.text) {
               this.sniffing_handler(data.text, data.input_type || 'notification')
             } else if (data.type === 'reminder_triggered' && data.task_id) {
@@ -715,6 +1032,7 @@ export const useTaskStore = defineStore('task', {
             if (idx > -1) this.tasks.splice(idx, 1)
             const expiredIdx = this.expired_tasks.findIndex(t => t.task_id === task_id)
             if (expiredIdx > -1) this.expired_tasks.splice(expiredIdx, 1)
+            await notificationService.cancelTask(task_id)
             this.error = null
             this.error_msg = ''
             return true
@@ -734,9 +1052,11 @@ export const useTaskStore = defineStore('task', {
     },
 
     async delete_all_expired() {
+      const expiredTaskIds = this.expired_tasks.map(task => task.task_id || task.id).filter(Boolean)
       const result = await apiService.delete_expired_tasks()
       if (result.success && result.data?.code === 0) {
         const deletedCount = result.data.data?.deleted_count || 0
+        await Promise.all(expiredTaskIds.map(taskId => notificationService.cancelTask(taskId)))
         this.expired_tasks = []
         this.error = null
         this.error_msg = ''
@@ -764,6 +1084,12 @@ export const useTaskStore = defineStore('task', {
         if (result.success && result.data) {
           const response = result.data
           if (response.code === 0) {
+            const updatedTask = idx > -1 ? this.tasks[idx] : { ...task, status: newStatus }
+            if (newStatus === 'completed') {
+              await notificationService.cancelTask(task_id)
+            } else {
+              await this.rebuild_task_notifications(updatedTask)
+            }
             this.error = null
             this.error_msg = ''
             return true
