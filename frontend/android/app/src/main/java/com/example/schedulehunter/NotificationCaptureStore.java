@@ -23,6 +23,7 @@ final class NotificationCaptureStore {
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_QUEUE = "pending_notifications";
     private static final String KEY_DEDUPE = "notification_dedupe";
+    private static final String KEY_BACKEND_URL = "backend_url";
     private static final int MAX_QUEUE_SIZE = 100;
     private static final long DEDUPE_WINDOW_MS = 2 * 60 * 1000L;
     private static final long DEDUPE_RETENTION_MS = 10 * 60 * 1000L;
@@ -46,6 +47,14 @@ final class NotificationCaptureStore {
 
     static synchronized void setEnabled(Context context, boolean enabled) {
         preferences(context).edit().putBoolean(KEY_ENABLED, enabled).apply();
+    }
+
+    static synchronized void setBackendUrl(Context context, String backendUrl) {
+        preferences(context).edit().putString(KEY_BACKEND_URL, backendUrl == null ? "" : backendUrl.trim()).apply();
+    }
+
+    static synchronized String getBackendUrl(Context context) {
+        return preferences(context).getString(KEY_BACKEND_URL, "");
     }
 
     static boolean containsSensitiveContent(String text) {
@@ -87,6 +96,27 @@ final class NotificationCaptureStore {
 
     static synchronized JSONArray getPending(Context context) {
         return readArray(preferences(context).getString(KEY_QUEUE, "[]"));
+    }
+
+    static synchronized JSONObject attachParsedResponse(Context context, String eventId, JSONObject response) {
+        SharedPreferences prefs = preferences(context);
+        JSONArray current = readArray(prefs.getString(KEY_QUEUE, "[]"));
+        JSONArray next = new JSONArray();
+        JSONObject updated = null;
+        for (int index = 0; index < current.length(); index++) {
+            JSONObject item = current.optJSONObject(index);
+            if (item == null) continue;
+            if (eventId.equals(item.optString("event_id"))) {
+                try {
+                    item.put("parsed_response", response);
+                    item.put("parsed_at", System.currentTimeMillis());
+                    updated = item;
+                } catch (JSONException ignored) {}
+            }
+            next.put(item);
+        }
+        prefs.edit().putString(KEY_QUEUE, next.toString()).commit();
+        return updated;
     }
 
     static synchronized int acknowledge(Context context, JSONArray eventIds) {

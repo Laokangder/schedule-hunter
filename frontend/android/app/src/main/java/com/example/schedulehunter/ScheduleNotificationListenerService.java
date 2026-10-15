@@ -54,7 +54,11 @@ public class ScheduleNotificationListenerService extends NotificationListenerSer
         }
 
         NotificationCaptureStore.enqueue(this, event);
-        SystemNotificationPlugin.dispatchCaptured(event);
+        if (SystemNotificationPlugin.isAppForeground()) {
+            SystemNotificationPlugin.dispatchCaptured(event);
+        } else {
+            BackgroundCandidateProcessor.process(getApplicationContext(), event);
+        }
     }
 
     private boolean shouldIgnore(Notification notification) {

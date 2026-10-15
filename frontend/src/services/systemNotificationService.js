@@ -22,6 +22,11 @@ export async function setEnabled(enabled) {
   return SystemNotificationListener.setEnabled({ enabled })
 }
 
+export async function setBackendUrl(backendUrl) {
+  if (!isSupported()) return { configured: false }
+  return SystemNotificationListener.setBackendUrl({ backendUrl: backendUrl || '' })
+}
+
 export async function getPending() {
   if (!isSupported()) return []
   const result = await SystemNotificationListener.getPending()

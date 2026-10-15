@@ -168,7 +168,7 @@
             </button>
             <span v-if="systemNotificationMessage" class="text-sm" :class="store.system_notification_error ? 'text-red-400' : 'text-neutral-500'">{{ systemNotificationMessage }}</span>
           </div>
-          <p class="mt-4 text-xs leading-5 text-neutral-600">授权页中请选择“日程猎人”。后台收到的内容会先进入本机待处理队列，打开应用后生成候选日程，不会自动创建。</p>
+          <p class="mt-4 text-xs leading-5 text-neutral-600">授权页中请选择“日程猎人”。后台识别成功会发送候选通知；点击后打开 App 进行确认，不会自动创建。断网时原文会保留在本机队列中。</p>
         </div>
       </section>
     </main>
@@ -280,6 +280,7 @@ async function saveBackendAddress() {
   backendStatus.value = { success: false, message: '' }
   const savedAddress = apiService.set_api_base_url(backendAddress.value)
   backendAddress.value = savedAddress || apiService.get_api_base_url()
+  await store.configure_system_notification_backend(backendAddress.value)
   const result = await apiService.test_backend_connection(backendAddress.value)
   if (result.success) {
     backendStatus.value = { success: true, message: '连接成功' }

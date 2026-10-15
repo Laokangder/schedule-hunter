@@ -274,6 +274,7 @@ export const useTaskStore = defineStore('task', {
     async initialize_system_notification_listener() {
       if (!this.system_notification_supported) return
       try {
+        await systemNotificationService.setBackendUrl(apiService.get_api_base_url())
         const status = await systemNotificationService.getStatus()
         this.system_notification_permission = !!status.granted
         this.system_notification_enabled = !!status.enabled
@@ -335,6 +336,17 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
+    async configure_system_notification_backend(backendUrl) {
+      if (!this.system_notification_supported) return false
+      try {
+        const result = await systemNotificationService.setBackendUrl(backendUrl)
+        return !!result.configured
+      } catch (error) {
+        this.system_notification_error = error.message || '后台解析地址配置失败'
+        return false
+      }
+    },
+
     handle_system_notification_event(event) {
       systemNotificationProcessingChain = systemNotificationProcessingChain
         .then(() => this._process_system_notification_event(event))
@@ -357,7 +369,9 @@ export const useTaskStore = defineStore('task', {
         processedSystemNotificationIds.delete(oldest)
       }
 
-      const result = await this.sniffing_handler(sourceText, 'notification')
+      const result = event.parsed_response
+        ? this.apply_parse_response(event.parsed_response, sourceText)
+        : await this.sniffing_handler(sourceText, 'notification')
       if (result?.success) {
         await systemNotificationService.acknowledge([eventId])
         this.system_notification_error = ''
@@ -479,77 +493,8 @@ export const useTaskStore = defineStore('task', {
         }
         const result = await apiService.parse_task(raw_text, context, meta)
 
-        this.last_response = result
-
         if (result.success && result.data) {
-          const response_data = result.data.data || result.data
-          this.trace_id = response_data.trace_id || result.data.trace_id
-
-          if (response_data.code === 0) {
-            const parsed = response_data.parsed || {}
-            const conflict = response_data.conflict
-            const suggestions = response_data.suggestions || []
-            this.needs_confirmation = response_data.needs_confirmation || false
-            this.ambiguities = response_data.ambiguities || []
-            this.error = null
-            this.error_msg = ''
-
-            this.is_conflict = response_data.is_conflict || false
-
-            if (conflict) {
-              this.conflict_detail = conflict.detail || ''
-              this.conflict_type = conflict.conflict_type || null
-              this.conflict_level = conflict.conflict_level || 'medium'
-              this.conflict_task_id = conflict.conflicting_task_id || null
-            } else {
-              this.conflict_detail = ''
-              this.conflict_type = null
-              this.conflict_level = null
-              this.conflict_task_id = null
-            }
-
-            this.conflict_suggestions = suggestions.map(s => ({
-              action: s.action,
-              description: s.description,
-              suggested_time: s.suggested_time,
-              suggested_duration_minutes: s.suggested_duration_minutes
-            }))
-
-            const task = {
-              id: `task_${Date.now()}`,
-              task_id: `task_${Date.now()}`,
-              title: parsed.title,
-              start_time: parsed.start_time,
-              end_time: parsed.end_time,
-              location: parsed.location,
-              participants: parsed.participants || [],
-              timezone: parsed.timezone || 'Asia/Shanghai',
-              confidence: parsed.confidence || 0,
-              source_text: raw_text,
-              is_conflict: this.is_conflict,
-              conflict_detail: this.conflict_detail,
-              conflict_type: this.conflict_type,
-              conflict_level: this.conflict_level,
-              suggestions: this.conflict_suggestions,
-              needs_confirmation: this.needs_confirmation,
-              ambiguities: this.ambiguities
-            }
-
-            if (this.is_conflict) {
-              this.island_state = 'warning'
-              this.pending_task = task
-            } else {
-              this.active_task = task
-              this.pending_task = task
-              this.island_state = 'candidate'
-            }
-
-            return { success: true, data: response_data }
-          } else {
-            this.error = String(response_data.code)
-            this.error_msg = ERROR_MESSAGES[response_data.code] || response_data.message || '解析失败'
-            return { success: false, error: this.error_msg, code: response_data.code, retryable: false }
-          }
+          return this.apply_parse_response(result.data, raw_text)
         } else {
           this.error = result.error
           this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
@@ -560,6 +505,79 @@ export const useTaskStore = defineStore('task', {
         this.error_msg = ERROR_MESSAGES[parseInt(error.message)] || error.message
         return { success: false, error: this.error_msg, retryable: true }
       }
+    },
+
+    apply_parse_response(response_envelope, raw_text) {
+      this.last_response = { success: true, data: response_envelope }
+      const response_data = response_envelope?.data || {}
+      this.trace_id = response_envelope?.trace_id || response_data.trace_id
+
+      if (response_envelope?.code !== 0) {
+        this.error = String(response_envelope?.code)
+        this.error_msg = ERROR_MESSAGES[response_envelope?.code] || response_envelope?.message || '解析失败'
+        return { success: false, error: this.error_msg, code: response_envelope?.code, retryable: false }
+      }
+
+      const parsed = response_data.parsed || {}
+      const conflict = response_data.conflict
+      const suggestions = response_data.suggestions || []
+      this.needs_confirmation = response_data.needs_confirmation || false
+      this.ambiguities = response_data.ambiguities || []
+      this.error = null
+      this.error_msg = ''
+      this.is_conflict = response_data.is_conflict || false
+
+      if (conflict) {
+        this.conflict_detail = conflict.detail || ''
+        this.conflict_type = conflict.conflict_type || null
+        this.conflict_level = conflict.conflict_level || 'medium'
+        this.conflict_task_id = conflict.conflicting_task_id || conflict.task_id || null
+      } else {
+        this.conflict_detail = ''
+        this.conflict_type = null
+        this.conflict_level = null
+        this.conflict_task_id = null
+      }
+
+      this.conflict_suggestions = suggestions.map(s => ({
+        action: s.action,
+        description: s.description,
+        suggested_time: s.suggested_time,
+        suggested_duration_minutes: s.suggested_duration_minutes
+      }))
+
+      const temporaryId = `task_${Date.now()}`
+      const task = {
+        id: temporaryId,
+        task_id: temporaryId,
+        title: parsed.title,
+        start_time: parsed.start_time,
+        end_time: parsed.end_time,
+        location: parsed.location,
+        participants: parsed.participants || [],
+        timezone: parsed.timezone || 'Asia/Shanghai',
+        confidence: parsed.confidence || 0,
+        source_text: raw_text,
+        is_conflict: this.is_conflict,
+        conflict_detail: this.conflict_detail,
+        conflict_type: this.conflict_type,
+        conflict_level: this.conflict_level,
+        suggestions: this.conflict_suggestions,
+        needs_confirmation: this.needs_confirmation,
+        ambiguities: this.ambiguities
+      }
+
+      if (this.is_conflict) {
+        this.active_task = task
+        this.pending_task = task
+        this.island_state = 'warning'
+      } else {
+        this.active_task = task
+        this.pending_task = task
+        this.island_state = 'candidate'
+      }
+
+      return { success: true, data: response_data }
     },
 
     _schedule_reminder(task) {

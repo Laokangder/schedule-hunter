@@ -10,4 +10,16 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SystemNotificationPlugin.class);
         super.onCreate(savedInstanceState);
     }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        SystemNotificationPlugin.setAppForeground(true);
+    }
+
+    @Override
+    public void onStop() {
+        SystemNotificationPlugin.setAppForeground(false);
+        super.onStop();
+    }
 }

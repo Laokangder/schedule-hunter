@@ -19,6 +19,7 @@ import org.json.JSONObject;
 @CapacitorPlugin(name = "SystemNotificationListener")
 public class SystemNotificationPlugin extends Plugin {
     private static volatile SystemNotificationPlugin activeInstance;
+    private static volatile boolean appForeground;
 
     @Override
     public void load() {
@@ -61,6 +62,20 @@ public class SystemNotificationPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setBackendUrl(PluginCall call) {
+        String backendUrl = call.getString("backendUrl", "");
+        if (!backendUrl.isEmpty() && !backendUrl.startsWith("http://") && !backendUrl.startsWith("https://")) {
+            call.reject("后端地址必须以 http:// 或 https:// 开头");
+            return;
+        }
+        while (backendUrl.endsWith("/")) backendUrl = backendUrl.substring(0, backendUrl.length() - 1);
+        NotificationCaptureStore.setBackendUrl(getContext(), backendUrl);
+        JSObject result = new JSObject();
+        result.put("configured", !backendUrl.isEmpty());
+        call.resolve(result);
+    }
+
+    @PluginMethod
     public void getPending(PluginCall call) {
         JSONArray pending = NotificationCaptureStore.getPending(getContext());
         JSObject result = new JSObject();
@@ -89,5 +104,13 @@ public class SystemNotificationPlugin extends Plugin {
                 instance.notifyListeners("notificationCaptured", JSObject.fromJSONObject(event), true);
             } catch (JSONException ignored) {}
         });
+    }
+
+    static boolean isAppForeground() {
+        return appForeground;
+    }
+
+    static void setAppForeground(boolean foreground) {
+        appForeground = foreground;
     }
 }
