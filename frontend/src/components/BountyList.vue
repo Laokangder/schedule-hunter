@@ -42,6 +42,16 @@
           <button
             v-if="!isExpired(task)"
             type="button"
+            class="row-action hover:text-blue-400"
+            aria-label="编辑日程"
+            title="编辑日程"
+            @click="store.open_task_editor(task)"
+          >
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4 20h4l11-11-4-4L4 16v4zM13.5 6.5l4 4" /></svg>
+          </button>
+          <button
+            v-if="!isExpired(task)"
+            type="button"
             class="row-action hover:text-emerald-400"
             :aria-label="isCompleted(task) ? '恢复日程' : '标记完成'"
             :title="isCompleted(task) ? '恢复日程' : '标记完成'"

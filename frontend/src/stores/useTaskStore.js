@@ -2,10 +2,42 @@ import { defineStore } from 'pinia'
 import * as apiService from '@/services/apiService'
 import * as notificationService from '@/services/notificationService'
 import * as systemNotificationService from '@/services/systemNotificationService'
+import * as calendarService from '@/services/calendarService'
 import { localDateKey } from '@/utils/date'
 
 const processedSystemNotificationIds = new Set()
 let systemNotificationProcessingChain = Promise.resolve()
+const CANDIDATE_STORAGE_KEY = 'schedule_hunter_candidates_v1'
+
+function readLocalCandidates() {
+  try {
+    const value = JSON.parse(localStorage.getItem(CANDIDATE_STORAGE_KEY) || '[]')
+    return Array.isArray(value) ? value : []
+  } catch {
+    return []
+  }
+}
+
+function normalizeCandidateText(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s，。！？、,.!?;；:：]/g, '')
+}
+
+function hasSameCandidateIdentity(left, right) {
+  if (!left || !right) return false
+  if (left.request_id && right.request_id && left.request_id === right.request_id) return true
+  if (left.source_fingerprint && left.source_fingerprint === right.source_fingerprint) return true
+  if (normalizeCandidateText(left.parsed?.title) !== normalizeCandidateText(right.parsed?.title)) return false
+  const leftTime = new Date(left.parsed?.start_time).getTime()
+  const rightTime = new Date(right.parsed?.start_time).getTime()
+  if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || Math.abs(leftTime - rightTime) > 10 * 60_000) return false
+  const leftLocation = normalizeCandidateText(left.parsed?.location)
+  const rightLocation = normalizeCandidateText(right.parsed?.location)
+  return !leftLocation || !rightLocation || leftLocation === rightLocation
+}
+
+function isSimilarCandidate(left, right) {
+  return ['pending', 'snoozed'].includes(left?.status) && hasSameCandidateIdentity(left, right)
+}
 
 // 错误码到中文消息的映射
 const ERROR_MESSAGES = {
@@ -38,6 +70,10 @@ export const useTaskStore = defineStore('task', {
     trace_id: null,
     tasks: [],
     expired_tasks: [],
+    candidates: readLocalCandidates(),
+    candidate_error: '',
+    free_slot_suggestions: [],
+    editing_task: null,
     ws: null,
     is_loading: false,
     error: null,
@@ -51,8 +87,13 @@ export const useTaskStore = defineStore('task', {
     system_notification_permission: false,
     system_notification_enabled: false,
     system_notification_error: '',
+    notification_sources: [],
     _system_notification_listener_handle: null,
     _system_notifications_initialized: false,
+    calendar_supported: calendarService.isSupported(),
+    calendar_permission: false,
+    calendar_sync_enabled: calendarService.isEnabled(),
+    calendar_error: '',
     reminder_threshold: 30 * 60 * 1000,
     _timer_id: null,
     _poll_interval_id: null,
@@ -69,6 +110,11 @@ export const useTaskStore = defineStore('task', {
     is_reminder: (state) => state.island_state === 'reminder',
     is_warning: (state) => state.island_state === 'warning',
     is_detail: (state) => state.island_state === 'detail',
+    pending_candidates: (state) => state.candidates.filter(candidate => {
+      if (candidate.status === 'pending') return true
+      return candidate.status === 'snoozed' && Number(candidate.snoozed_until || 0) <= Date.now()
+    }).sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0)),
+    snoozed_candidates: (state) => state.candidates.filter(candidate => candidate.status === 'snoozed' && Number(candidate.snoozed_until || 0) > Date.now()),
     is_ambiguous: (state) => state.needs_confirmation && state.island_state === 'idle',
     current_task: (state) => state.active_task,
     warning_severity: (state) => {
@@ -101,6 +147,307 @@ export const useTaskStore = defineStore('task', {
   },
 
   actions: {
+    _persist_candidates() {
+      localStorage.setItem(CANDIDATE_STORAGE_KEY, JSON.stringify(this.candidates.slice(0, 200)))
+    },
+
+    _upsert_local_candidate(responseData, rawText, metadata = {}) {
+      const parsed = responseData?.parsed || {}
+      if (!parsed.title || !parsed.start_time) return null
+      const now = Date.now()
+      const sourcePackage = metadata.package_name || metadata.source_package || ''
+      const sourceAppName = metadata.app_name || metadata.source_app_name || (metadata.input_type === 'intent' ? '分享内容' : '手动输入')
+      const fingerprint = metadata.event_id || `${sourcePackage}|${normalizeCandidateText(rawText)}`
+      const candidate = {
+        candidate_id: responseData.candidate_id || metadata.candidate_id || `candidate_${now}_${Math.random().toString(36).slice(2, 8)}`,
+        request_id: responseData.request_id || metadata.request_id || metadata.event_id || apiService.generate_request_id(),
+        source_fingerprint: fingerprint,
+        intent_type: responseData.intent_type || 'create',
+        target_task_id: responseData.target_task_id || null,
+        source_type: metadata.input_type || 'manual',
+        source_package: sourcePackage,
+        source_app_name: sourceAppName,
+        source_text: rawText,
+        parsed: { ...parsed },
+        changes: responseData.changes || [],
+        confidence: Number(parsed.confidence ?? responseData.confidence ?? 0),
+        is_conflict: !!responseData.is_conflict,
+        conflict: responseData.conflict || null,
+        suggestions: responseData.suggestions || [],
+        status: 'pending',
+        snoozed_until: null,
+        seen_count: 1,
+        sources: [{
+          package_name: sourcePackage,
+          app_name: sourceAppName,
+          captured_at: metadata.captured_at || now
+        }],
+        created_at: now,
+        updated_at: now
+      }
+      const existingIndex = this.candidates.findIndex(item => isSimilarCandidate(item, candidate))
+      if (existingIndex >= 0) {
+        const existing = this.candidates[existingIndex]
+        const sources = [...(existing.sources || [])]
+        if (!sources.some(item => item.package_name === sourcePackage && item.captured_at === (metadata.captured_at || now))) {
+          sources.push(candidate.sources[0])
+        }
+        this.candidates[existingIndex] = {
+          ...existing,
+          parsed: candidate.confidence > Number(existing.confidence || 0) ? candidate.parsed : existing.parsed,
+          confidence: Math.max(candidate.confidence, Number(existing.confidence || 0)),
+          is_conflict: existing.is_conflict || candidate.is_conflict,
+          conflict: candidate.conflict || existing.conflict,
+          suggestions: candidate.suggestions.length ? candidate.suggestions : existing.suggestions,
+          seen_count: Number(existing.seen_count || 1) + 1,
+          sources,
+          updated_at: now
+        }
+        this._persist_candidates()
+        return this.candidates[existingIndex]
+      }
+      const terminalIndex = candidate.source_type === 'manual' ? -1 : this.candidates.findIndex(item => ['confirmed', 'ignored'].includes(item.status) && hasSameCandidateIdentity(item, candidate))
+      if (terminalIndex >= 0) {
+        const terminal = this.candidates[terminalIndex]
+        this.candidates[terminalIndex] = {
+          ...terminal,
+          seen_count: Number(terminal.seen_count || 1) + 1,
+          updated_at: now
+        }
+        this._persist_candidates()
+        return this.candidates[terminalIndex]
+      }
+      this.candidates.unshift(candidate)
+      this._persist_candidates()
+      return candidate
+    },
+
+    select_candidate(candidate) {
+      if (!candidate) return
+      const task = {
+        ...(candidate.parsed || {}),
+        candidate_id: candidate.candidate_id,
+        source_text: candidate.source_text,
+        input_type: candidate.source_type,
+        intent_type: candidate.intent_type,
+        target_task_id: candidate.target_task_id,
+        changes: candidate.changes || [],
+        is_conflict: !!candidate.is_conflict,
+        conflict_detail: candidate.conflict?.detail || '',
+        conflict_type: candidate.conflict?.conflict_type || null,
+        conflict_level: candidate.conflict?.conflict_level || null,
+        suggestions: candidate.suggestions || []
+      }
+      this.pending_task = task
+      this.active_task = task
+      this.captured_text = candidate.source_text || ''
+      this.set_active_task(task)
+      this.island_state = candidate.is_conflict ? 'warning' : 'candidate'
+    },
+
+    ignore_candidate(candidateId) {
+      const index = this.candidates.findIndex(item => item.candidate_id === candidateId)
+      if (index < 0) return false
+      this.candidates[index] = { ...this.candidates[index], status: 'ignored', updated_at: Date.now() }
+      this._persist_candidates()
+      void notificationService.cancelCandidateSnooze(candidateId)
+      if (this.active_task?.candidate_id === candidateId) this.clear_active_task()
+      return true
+    },
+
+    async snooze_local_candidate(candidateId, minutes) {
+      const index = this.candidates.findIndex(item => item.candidate_id === candidateId)
+      if (index < 0) return false
+      this.candidates[index] = {
+        ...this.candidates[index],
+        status: 'snoozed',
+        snoozed_until: Date.now() + Math.max(1, Number(minutes) || 10) * 60_000,
+        updated_at: Date.now()
+      }
+      this._persist_candidates()
+      await notificationService.scheduleCandidateSnooze(this.candidates[index], minutes).catch(error => {
+        this.notification_error = error.message || '候选稍后提醒注册失败'
+      })
+      if (this.active_task?.candidate_id === candidateId) this.clear_active_task()
+      return true
+    },
+
+    wake_due_candidates() {
+      const now = Date.now()
+      let changed = false
+      this.candidates = this.candidates.map(candidate => {
+        if (candidate.status !== 'snoozed' || Number(candidate.snoozed_until || 0) > now) return candidate
+        changed = true
+        return { ...candidate, status: 'pending', snoozed_until: null, updated_at: now }
+      })
+      if (changed) this._persist_candidates()
+    },
+
+    edit_candidate(candidateId, parsedChanges) {
+      const index = this.candidates.findIndex(item => item.candidate_id === candidateId)
+      if (index < 0) return false
+      this.candidates[index] = {
+        ...this.candidates[index],
+        parsed: { ...this.candidates[index].parsed, ...parsedChanges },
+        updated_at: Date.now()
+      }
+      this._persist_candidates()
+      return true
+    },
+
+    async confirm_local_candidate(candidateId) {
+      const index = this.candidates.findIndex(item => item.candidate_id === candidateId)
+      if (index < 0) return null
+      const candidate = this.candidates[index]
+      if (candidate.intent_type !== 'create') {
+        const result = await apiService.confirm_candidate(candidateId)
+        if (!result.success || result.data?.code !== 0) {
+          this.candidate_error = result.data?.message || result.error || '变更确认失败，等待后端功能完成'
+          return null
+        }
+        await notificationService.cancelCandidateSnooze(candidateId)
+        this.candidates[index] = { ...candidate, status: 'confirmed', updated_at: Date.now() }
+        this._persist_candidates()
+        const changedTask = result.data?.data?.task || result.data?.data?.normalized || null
+        if (candidate.intent_type === 'cancel') {
+          const targetId = candidate.target_task_id || changedTask?.task_id
+          if (targetId) {
+            await notificationService.cancelTask(targetId)
+            await calendarService.deleteTask(targetId).catch(error => { this.calendar_error = error.message })
+          }
+        } else if (changedTask) {
+          await this.rebuild_task_notifications(changedTask)
+          await calendarService.upsertTask(changedTask).catch(error => { this.calendar_error = error.message })
+        }
+        await this.fetch_latest_tasks()
+        return result.data?.data || true
+      }
+
+      const result = await apiService.create_task({
+        source_text: candidate.source_text || candidate.parsed?.title || '',
+        parsed: candidate.parsed,
+        priority: candidate.priority || 'normal',
+        reminder_policy: candidate.reminder_policy,
+        meta: { input_type: candidate.source_type || 'manual', language: 'zh-CN' }
+      })
+      const response = result.data || {}
+      const data = response.data || {}
+      if (!result.success || response.code !== 0 || !data.task_id) {
+        this.candidate_error = response.message || result.error || '候选创建失败'
+        return null
+      }
+      await notificationService.cancelCandidateSnooze(candidateId)
+      const createdTask = { ...candidate.parsed, task_id: data.task_id, status: data.status || 'scheduled' }
+      this.candidates[index] = { ...candidate, status: 'confirmed', updated_at: Date.now() }
+      this._persist_candidates()
+      await this.register_task_notifications(createdTask)
+      await calendarService.upsertTask(createdTask).catch(error => { this.calendar_error = error.message })
+      await this.fetch_latest_tasks()
+      this.clear_active_task()
+      return createdTask
+    },
+
+    open_task_editor(task) {
+      this.editing_task = task ? { ...task } : null
+    },
+
+    close_task_editor() {
+      this.editing_task = null
+    },
+
+    async update_task_details(taskId, changes) {
+      const result = await apiService.update_task(taskId, changes)
+      const response = result.data || {}
+      if (!result.success || response.code !== 0) {
+        this.error_msg = response.message || result.error || '日程更新失败'
+        return null
+      }
+      const updated = response.data?.task || response.data?.normalized || response.data || { task_id: taskId, ...changes }
+      const index = this.tasks.findIndex(task => (task.task_id || task.id) === taskId)
+      const merged = { ...(index >= 0 ? this.tasks[index] : {}), ...updated, task_id: taskId }
+      if (index >= 0) this.tasks[index] = merged
+      await this.rebuild_task_notifications(merged)
+      await calendarService.upsertTask(merged).catch(error => { this.calendar_error = error.message })
+      this.close_task_editor()
+      this.error_msg = ''
+      return merged
+    },
+
+    async initialize_calendar_sync() {
+      this.calendar_sync_enabled = calendarService.isEnabled()
+      if (!this.calendar_supported) return
+      try {
+        const state = await calendarService.getPermissionState()
+        this.calendar_permission = !!state.granted
+      } catch (error) {
+        this.calendar_error = error.message || '读取系统日历权限失败'
+      }
+    },
+
+    async set_calendar_sync_enabled(enabled) {
+      if (!this.calendar_supported) return false
+      try {
+        let state = await calendarService.getPermissionState()
+        if (enabled && !state.granted) state = await calendarService.requestPermission()
+        this.calendar_permission = !!state.granted
+        if (enabled && !state.granted) {
+          this.calendar_error = '需要系统日历权限才能同步'
+          return false
+        }
+        calendarService.setEnabled(enabled)
+        this.calendar_sync_enabled = enabled
+        if (enabled) await Promise.all(this.tasks.map(task => calendarService.upsertTask(task)))
+        this.calendar_error = ''
+        return true
+      } catch (error) {
+        this.calendar_error = error.message || '系统日历设置失败'
+        return false
+      }
+    },
+
+    async refresh_notification_sources() {
+      if (!this.system_notification_supported) return
+      try {
+        this.notification_sources = await systemNotificationService.getSources()
+      } catch (error) {
+        this.system_notification_error = error.message || '读取通知来源失败'
+      }
+    },
+
+    async set_notification_source_enabled(packageName, enabled) {
+      try {
+        await systemNotificationService.setSourceEnabled(packageName, enabled)
+        const index = this.notification_sources.findIndex(item => item.package_name === packageName)
+        if (index >= 0) this.notification_sources[index] = { ...this.notification_sources[index], enabled }
+        return true
+      } catch (error) {
+        this.system_notification_error = error.message || '通知来源设置失败'
+        return false
+      }
+    },
+
+    async request_free_slots(candidate, options = {}) {
+      const start = new Date(candidate?.start_time || Date.now())
+      const end = new Date(candidate?.end_time || start.getTime() + 60 * 60_000)
+      const durationMinutes = Math.max(15, Math.round((end - start) / 60_000) || 60)
+      const rangeEnd = new Date(start)
+      rangeEnd.setDate(rangeEnd.getDate() + 7)
+      const result = await apiService.find_free_slots({
+        duration_minutes: durationMinutes,
+        range_start: options.range_start || start.toISOString(),
+        range_end: options.range_end || rangeEnd.toISOString(),
+        preferred_start: candidate?.start_time,
+        working_hours: options.working_hours || { start: '08:00', end: '22:00' },
+        buffer_minutes: options.buffer_minutes ?? 15
+      })
+      if (!result.success || result.data?.code !== 0) {
+        this.candidate_error = result.data?.message || result.error || '暂时无法获取空档建议'
+        return []
+      }
+      this.free_slot_suggestions = result.data?.data?.slots || result.data?.data?.suggestions || []
+      return this.free_slot_suggestions
+    },
+
     _start_reminder_timer() {
       if (this._timer_id) {
         clearInterval(this._timer_id)
@@ -287,6 +634,7 @@ export const useTaskStore = defineStore('task', {
 
         this._system_notifications_initialized = true
         this.system_notification_error = ''
+        await this.refresh_notification_sources()
         if (this.system_notification_permission && this.system_notification_enabled) {
           await this.drain_system_notification_queue()
         }
@@ -361,6 +709,7 @@ export const useTaskStore = defineStore('task', {
       const eventId = event?.event_id
       const sourceText = event?.source_text?.trim()
       if (!eventId || !sourceText || processedSystemNotificationIds.has(eventId)) return false
+      if (Number(event?.snoozed_until || 0) > Date.now()) return false
       if (this.active_task || this.pending_task) return false
 
       processedSystemNotificationIds.add(eventId)
@@ -370,8 +719,8 @@ export const useTaskStore = defineStore('task', {
       }
 
       const result = event.parsed_response
-        ? this.apply_parse_response(event.parsed_response, sourceText)
-        : await this.sniffing_handler(sourceText, 'notification')
+        ? this.apply_parse_response(event.parsed_response, sourceText, event)
+        : await this.sniffing_handler(sourceText, event.input_type || 'notification', event)
       if (result?.success) {
         await systemNotificationService.acknowledge([eventId])
         this.system_notification_error = ''
@@ -394,6 +743,7 @@ export const useTaskStore = defineStore('task', {
       if (this.active_task || this.pending_task) return 0
       const notifications = await systemNotificationService.getPending()
       for (const event of notifications) {
+        if (Number(event?.snoozed_until || 0) > Date.now()) continue
         const createdCandidate = await this.handle_system_notification_event(event)
         if (createdCandidate || this.active_task || this.pending_task || this.system_notification_error) break
       }
@@ -471,7 +821,7 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
-    async sniffing_handler(raw_text, input_type = 'manual') {
+    async sniffing_handler(raw_text, input_type = 'manual', metadata = {}) {
       this.captured_text = raw_text
 
       try {
@@ -494,7 +844,7 @@ export const useTaskStore = defineStore('task', {
         const result = await apiService.parse_task(raw_text, context, meta)
 
         if (result.success && result.data) {
-          return this.apply_parse_response(result.data, raw_text)
+          return this.apply_parse_response(result.data, raw_text, { ...metadata, input_type })
         } else {
           this.error = result.error
           this.error_msg = ERROR_MESSAGES[parseInt(result.error)] || result.error
@@ -507,7 +857,7 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
-    apply_parse_response(response_envelope, raw_text) {
+    apply_parse_response(response_envelope, raw_text, metadata = {}) {
       this.last_response = { success: true, data: response_envelope }
       const response_data = response_envelope?.data || {}
       this.trace_id = response_envelope?.trace_id || response_data.trace_id
@@ -567,6 +917,17 @@ export const useTaskStore = defineStore('task', {
         ambiguities: this.ambiguities
       }
 
+      const candidate = this._upsert_local_candidate(response_data, raw_text, metadata)
+      if (candidate) {
+        task.candidate_id = candidate.candidate_id
+        task.intent_type = candidate.intent_type
+        task.target_task_id = candidate.target_task_id
+        task.changes = candidate.changes
+        if (['confirmed', 'ignored'].includes(candidate.status)) {
+          return { success: true, data: response_data, duplicate_suppressed: true }
+        }
+      }
+
       if (this.is_conflict) {
         this.active_task = task
         this.pending_task = task
@@ -613,7 +974,7 @@ export const useTaskStore = defineStore('task', {
       }
     },
 
-    async handle_native_sniff(source_text, input_type = 'manual') {
+    async handle_native_sniff(source_text, input_type = 'manual', metadata = {}) {
       if (!source_text || !source_text.trim()) return
       this.captured_text = source_text
       this.is_loading = true
@@ -627,32 +988,7 @@ export const useTaskStore = defineStore('task', {
         const result = await apiService.parse_task(source_text, {}, meta)
 
         if (result.success && result.data) {
-          if (result.data.code === 0) {
-            console.log('🔥 [DEBUG] 准备激活灵动岛，数据:', result.data)
-
-            const raw_data = result.data.data?.parsed || result.data.data || result.data
-
-            this.active_task = {
-              ...raw_data,
-              source_text
-            }
-            this.is_conflict = !!raw_data.is_conflict
-            this.island_state = 'candidate'
-
-            if (raw_data.is_conflict) {
-              this.island_state = 'warning'
-              if (raw_data.conflict) {
-                this.conflict_detail = raw_data.conflict.detail || ''
-                this.conflict_type = raw_data.conflict.conflict_type || null
-                this.conflict_level = raw_data.conflict.conflict_level || 'medium'
-              }
-            }
-
-            return { success: true, data: raw_data }
-          } else {
-            this.error = result.data.message || 'Parse failed'
-            return { success: false, error: this.error }
-          }
+          return this.apply_parse_response(result.data, source_text, { ...metadata, input_type })
         } else {
           console.error('❌ [STORE ERROR]:', result.error)
           this.error = result.error
@@ -810,6 +1146,7 @@ export const useTaskStore = defineStore('task', {
           }
           this.tasks.push(created_task)
           await this.register_task_notifications(created_task)
+          await calendarService.upsertTask(created_task).catch(error => { this.calendar_error = error.message })
           this.clear_active_task()
           this.fetch_latest_tasks()
           return created_task
@@ -853,6 +1190,7 @@ export const useTaskStore = defineStore('task', {
           }
           this.tasks.push(created_task)
           await this.register_task_notifications(created_task)
+          await calendarService.upsertTask(created_task).catch(error => { this.calendar_error = error.message })
           this.clear_active_task()
           return created_task
         }
@@ -913,6 +1251,7 @@ export const useTaskStore = defineStore('task', {
 
         this.tasks.push(created_task)
         await this.register_task_notifications(created_task)
+        await calendarService.upsertTask(created_task).catch(error => { this.calendar_error = error.message })
         this.error = null
         this.error_msg = ''
         this.clear_active_task()
@@ -1051,6 +1390,7 @@ export const useTaskStore = defineStore('task', {
             const expiredIdx = this.expired_tasks.findIndex(t => t.task_id === task_id)
             if (expiredIdx > -1) this.expired_tasks.splice(expiredIdx, 1)
             await notificationService.cancelTask(task_id)
+            await calendarService.deleteTask(task_id).catch(error => { this.calendar_error = error.message })
             this.error = null
             this.error_msg = ''
             return true
@@ -1075,6 +1415,7 @@ export const useTaskStore = defineStore('task', {
       if (result.success && result.data?.code === 0) {
         const deletedCount = result.data.data?.deleted_count || 0
         await Promise.all(expiredTaskIds.map(taskId => notificationService.cancelTask(taskId)))
+        await Promise.all(expiredTaskIds.map(taskId => calendarService.deleteTask(taskId).catch(error => { this.calendar_error = error.message })))
         this.expired_tasks = []
         this.error = null
         this.error_msg = ''

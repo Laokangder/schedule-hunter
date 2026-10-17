@@ -24,6 +24,8 @@ final class NotificationCaptureStore {
     private static final String KEY_QUEUE = "pending_notifications";
     private static final String KEY_DEDUPE = "notification_dedupe";
     private static final String KEY_BACKEND_URL = "backend_url";
+    private static final String KEY_SOURCE_RULES = "source_rules";
+    private static final String KEY_OBSERVED_SOURCES = "observed_sources";
     private static final int MAX_QUEUE_SIZE = 100;
     private static final long DEDUPE_WINDOW_MS = 2 * 60 * 1000L;
     private static final long DEDUPE_RETENTION_MS = 10 * 60 * 1000L;
@@ -55,6 +57,45 @@ final class NotificationCaptureStore {
 
     static synchronized String getBackendUrl(Context context) {
         return preferences(context).getString(KEY_BACKEND_URL, "");
+    }
+
+    static synchronized boolean isSourceAllowed(Context context, String packageName) {
+        JSONObject rules = readObject(preferences(context).getString(KEY_SOURCE_RULES, "{}"));
+        return !rules.has(packageName) || rules.optBoolean(packageName, true);
+    }
+
+    static synchronized void setSourceAllowed(Context context, String packageName, boolean allowed) {
+        SharedPreferences prefs = preferences(context);
+        JSONObject rules = readObject(prefs.getString(KEY_SOURCE_RULES, "{}"));
+        try { rules.put(packageName, allowed); } catch (JSONException ignored) {}
+        prefs.edit().putString(KEY_SOURCE_RULES, rules.toString()).apply();
+    }
+
+    static synchronized void recordSource(Context context, String packageName, String appName) {
+        if (packageName == null || packageName.isEmpty()) return;
+        SharedPreferences prefs = preferences(context);
+        JSONObject sources = readObject(prefs.getString(KEY_OBSERVED_SOURCES, "{}"));
+        try { sources.put(packageName, appName == null || appName.isEmpty() ? packageName : appName); } catch (JSONException ignored) {}
+        prefs.edit().putString(KEY_OBSERVED_SOURCES, sources.toString()).apply();
+    }
+
+    static synchronized JSONArray getSources(Context context) {
+        SharedPreferences prefs = preferences(context);
+        JSONObject sources = readObject(prefs.getString(KEY_OBSERVED_SOURCES, "{}"));
+        JSONObject rules = readObject(prefs.getString(KEY_SOURCE_RULES, "{}"));
+        JSONArray result = new JSONArray();
+        Iterator<String> keys = sources.keys();
+        while (keys.hasNext()) {
+            String packageName = keys.next();
+            JSONObject item = new JSONObject();
+            try {
+                item.put("package_name", packageName);
+                item.put("app_name", sources.optString(packageName, packageName));
+                item.put("enabled", !rules.has(packageName) || rules.optBoolean(packageName, true));
+                result.put(item);
+            } catch (JSONException ignored) {}
+        }
+        return result;
     }
 
     static boolean containsSensitiveContent(String text) {
@@ -96,6 +137,26 @@ final class NotificationCaptureStore {
 
     static synchronized JSONArray getPending(Context context) {
         return readArray(preferences(context).getString(KEY_QUEUE, "[]"));
+    }
+
+    static synchronized JSONObject getEvent(Context context, String eventId) {
+        JSONArray current = getPending(context);
+        for (int index = 0; index < current.length(); index++) {
+            JSONObject item = current.optJSONObject(index);
+            if (item != null && eventId.equals(item.optString("event_id"))) return item;
+        }
+        return null;
+    }
+
+    static synchronized void markSnoozed(Context context, String eventId, long snoozedUntil) {
+        SharedPreferences prefs = preferences(context);
+        JSONArray current = readArray(prefs.getString(KEY_QUEUE, "[]"));
+        for (int index = 0; index < current.length(); index++) {
+            JSONObject item = current.optJSONObject(index);
+            if (item == null || !eventId.equals(item.optString("event_id"))) continue;
+            try { item.put("snoozed_until", snoozedUntil); } catch (JSONException ignored) {}
+        }
+        prefs.edit().putString(KEY_QUEUE, current.toString()).apply();
     }
 
     static synchronized JSONObject attachParsedResponse(Context context, String eventId, JSONObject response) {
@@ -166,6 +227,14 @@ final class NotificationCaptureStore {
             return new JSONArray(raw == null ? "[]" : raw);
         } catch (JSONException error) {
             return new JSONArray();
+        }
+    }
+
+    private static JSONObject readObject(String raw) {
+        try {
+            return new JSONObject(raw == null ? "{}" : raw);
+        } catch (JSONException error) {
+            return new JSONObject();
         }
     }
 

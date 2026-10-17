@@ -129,7 +129,7 @@ final class BackgroundCandidateProcessor {
         return result.toString();
     }
 
-    private static void showCandidateNotification(Context context, JSONObject event, JSONObject response) {
+    static void showCandidateNotification(Context context, JSONObject event, JSONObject response) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
             && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
 
@@ -164,6 +164,27 @@ final class BackgroundCandidateProcessor {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
+        Intent openAction = new Intent(context, CandidateActionReceiver.class)
+            .setAction(CandidateActionReceiver.ACTION_OPEN)
+            .putExtra(CandidateActionReceiver.EXTRA_EVENT_ID, event.optString("event_id", ""));
+        PendingIntent confirmIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode ^ 0x101,
+            openAction,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+        PendingIntent snooze10Intent = candidateActionIntent(context, event.optString("event_id", ""), 10, requestCode ^ 0x102);
+        PendingIntent snooze60Intent = candidateActionIntent(context, event.optString("event_id", ""), 60, requestCode ^ 0x103);
+        Intent ignoreAction = new Intent(context, CandidateActionReceiver.class)
+            .setAction(CandidateActionReceiver.ACTION_IGNORE)
+            .putExtra(CandidateActionReceiver.EXTRA_EVENT_ID, event.optString("event_id", ""));
+        PendingIntent ignoreIntent = PendingIntent.getBroadcast(
+            context,
+            requestCode ^ 0x104,
+            ignoreAction,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(conflict ? "发现冲突日程，等待确认" : "发现候选日程")
@@ -172,8 +193,25 @@ final class BackgroundCandidateProcessor {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
-            .setContentIntent(pendingIntent);
+            .setContentIntent(pendingIntent)
+            .addAction(0, "查看确认", confirmIntent)
+            .addAction(0, "10分钟后", snooze10Intent)
+            .addAction(0, "1小时后", snooze60Intent)
+            .addAction(0, "忽略", ignoreIntent);
         manager.notify(requestCode, builder.build());
+    }
+
+    private static PendingIntent candidateActionIntent(Context context, String eventId, int delayMinutes, int requestCode) {
+        Intent action = new Intent(context, CandidateActionReceiver.class)
+            .setAction(CandidateActionReceiver.ACTION_SNOOZE)
+            .putExtra(CandidateActionReceiver.EXTRA_EVENT_ID, eventId)
+            .putExtra(CandidateActionReceiver.EXTRA_DELAY_MINUTES, delayMinutes);
+        return PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            action,
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
     }
 
     private static String compactTime(String value) {
@@ -182,7 +220,7 @@ final class BackgroundCandidateProcessor {
         return normalized.length() >= 16 ? normalized.substring(0, 16) : normalized;
     }
 
-    private static int stableNotificationId(String eventId) {
+    static int stableNotificationId(String eventId) {
         int value = eventId.hashCode() & 0x7fffffff;
         return value == 0 ? 1 : value;
     }

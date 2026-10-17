@@ -267,7 +267,8 @@ const handleConfirmAnyway = async () => {
 
   isConfirmingConflict.value = true
   try {
-    await store.confirm_conflicting_task()
+    if (activeTask.value?.candidate_id) await store.confirm_local_candidate(activeTask.value.candidate_id)
+    else await store.confirm_conflicting_task()
   } finally {
     isConfirmingConflict.value = false
   }
@@ -278,7 +279,8 @@ const handleDismissCandidate = () => {
 }
 
 const handleCreateCandidate = async () => {
-  await store.create_task_from_active()
+  if (activeTask.value?.candidate_id) await store.confirm_local_candidate(activeTask.value.candidate_id)
+  else await store.create_task_from_active()
 }
 
 const handleAcknowledgeReminder = () => {

@@ -38,6 +38,17 @@ export async function acknowledge(eventIds) {
   return SystemNotificationListener.acknowledge({ eventIds })
 }
 
+export async function getSources() {
+  if (!isSupported()) return []
+  const result = await SystemNotificationListener.getSources()
+  return Array.isArray(result?.sources) ? result.sources : []
+}
+
+export async function setSourceEnabled(packageName, enabled) {
+  if (!isSupported()) return { package_name: packageName, enabled: false }
+  return SystemNotificationListener.setSourceEnabled({ packageName, enabled })
+}
+
 export async function addCaptureListener(callback) {
   if (!isSupported()) return null
   return SystemNotificationListener.addListener('notificationCaptured', callback)

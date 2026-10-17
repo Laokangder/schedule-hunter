@@ -1,6 +1,7 @@
 <template>
   <div class="app-shell min-h-screen text-white">
     <ScheduleIsland />
+    <TaskEditModal />
 
     <main class="relative z-10 mx-auto max-w-3xl px-5 pb-32 pt-8 sm:px-8 sm:pt-12">
       <header class="mb-12">
@@ -96,6 +97,18 @@
         </div>
       </section>
 
+      <section v-else-if="activeView === 'candidates'" aria-labelledby="candidates-title">
+        <div class="mb-8 flex items-end justify-between gap-4">
+          <div>
+            <p class="mb-1 text-xs font-medium uppercase tracking-[0.22em] text-neutral-600">Inbox</p>
+            <h2 id="candidates-title" class="text-3xl font-semibold tracking-tight">候选日程</h2>
+            <p class="mt-2 text-sm text-neutral-500">通知、分享和手动解析的结果会先在这里等待确认</p>
+          </div>
+          <span class="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-semibold text-blue-400">{{ store.pending_candidates.length }} 条</span>
+        </div>
+        <CandidateInbox />
+      </section>
+
       <section v-else-if="activeView === 'expired'" aria-labelledby="expired-title">
         <div class="mb-5 flex items-end justify-between gap-4">
           <div>
@@ -169,6 +182,30 @@
             <span v-if="systemNotificationMessage" class="text-sm" :class="store.system_notification_error ? 'text-red-400' : 'text-neutral-500'">{{ systemNotificationMessage }}</span>
           </div>
           <p class="mt-4 text-xs leading-5 text-neutral-600">授权页中请选择“日程猎人”。后台识别成功会发送候选通知；点击后打开 App 进行确认，不会自动创建。断网时原文会保留在本机队列中。</p>
+          <div v-if="store.notification_sources.length" class="mt-5 space-y-2 border-t border-white/[0.06] pt-4">
+            <p class="mb-3 text-xs font-semibold uppercase tracking-[.18em] text-neutral-600">通知来源</p>
+            <label v-for="source in store.notification_sources" :key="source.package_name" class="flex items-center justify-between gap-4 rounded-xl bg-white/[0.025] px-4 py-3">
+              <span class="min-w-0">
+                <span class="block truncate text-sm text-neutral-200">{{ source.app_name }}</span>
+                <span class="block truncate text-xs text-neutral-600">{{ source.package_name }}</span>
+              </span>
+              <input type="checkbox" class="h-4 w-4 accent-blue-500" :checked="source.enabled" @change="setSourceEnabled(source, $event.target.checked)" />
+            </label>
+          </div>
+        </div>
+        <div class="border-b border-white/[0.07] py-6">
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <p class="font-medium text-white">同步到系统日历</p>
+              <p class="mt-1 text-sm leading-6 text-neutral-500">确认日程后写入手机日历；改期和删除时同步更新。</p>
+            </div>
+            <span class="rounded-full px-2.5 py-1 text-xs font-medium" :class="store.calendar_sync_enabled ? 'bg-emerald-500/10 text-emerald-400' : 'bg-neutral-500/10 text-neutral-400'">{{ store.calendar_sync_enabled ? '已开启' : '未开启' }}</span>
+          </div>
+          <button v-if="store.calendar_supported" type="button" class="mt-4 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-neutral-200 transition hover:bg-white/5" @click="toggleCalendarSync">
+            {{ store.calendar_sync_enabled ? '关闭系统日历同步' : '开启系统日历同步' }}
+          </button>
+          <p v-else class="mt-4 text-xs text-neutral-600">系统日历同步仅在 Android APK 中可用。</p>
+          <p v-if="store.calendar_error" class="mt-3 text-sm text-red-400">{{ store.calendar_error }}</p>
         </div>
       </section>
     </main>
@@ -176,6 +213,7 @@
     <nav class="bottom-nav" aria-label="主导航">
       <button type="button" :class="{ active: activeView === 'today' }" @click="switchView('today')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 10.5L12 4l8 6.5V20H4v-9.5z" /><path d="M9 20v-6h6v6" /></svg><span>今天</span></button>
       <button type="button" :class="{ active: activeView === 'calendar' }" @click="switchView('calendar')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16" /></svg><span>日历</span></button>
+      <button type="button" class="relative" :class="{ active: activeView === 'candidates' }" @click="switchView('candidates')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h16v12H4z" /><path d="M4 13h4l2 3h4l2-3h4" /></svg><span>候选</span><b v-if="store.pending_candidates.length" class="nav-badge">{{ Math.min(store.pending_candidates.length, 99) }}</b></button>
       <button type="button" :class="{ active: activeView === 'expired' }" @click="switchView('expired')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></svg><span>过期</span></button>
       <button type="button" :class="{ active: activeView === 'settings' }" @click="switchView('settings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6L7 7M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4" /></svg><span>设置</span></button>
     </nav>
@@ -188,8 +226,11 @@ import { useTaskStore } from '@/stores/useTaskStore'
 import ScheduleIsland from './Island/ScheduleIsland.vue'
 import CalendarGrid from './CalendarGrid.vue'
 import BountyList from './BountyList.vue'
+import CandidateInbox from './CandidateInbox.vue'
+import TaskEditModal from './TaskEditModal.vue'
 import { localDateKey } from '@/utils/date'
 import * as apiService from '@/services/apiService'
+import * as notificationService from '@/services/notificationService'
 
 const store = useTaskStore()
 const sniffText = ref('')
@@ -202,6 +243,7 @@ const backendStatus = ref({ success: false, message: '' })
 const notificationMessage = ref('')
 const systemNotificationMessage = ref('')
 let clockTimer = null
+let notificationActionHandle = null
 
 const platformLabel = apiService.is_native_app() ? 'APK' : 'Web'
 const notificationStatusLabel = computed(() => {
@@ -272,6 +314,7 @@ async function clearExpired() {
 
 function switchView(view) {
   activeView.value = view
+  if (view === 'settings') void store.refresh_notification_sources()
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
@@ -329,13 +372,32 @@ async function toggleSystemNotificationListener() {
   systemNotificationMessage.value = changed ? (nextEnabled ? '系统通知监听已恢复' : '系统通知监听已暂停') : store.system_notification_error
 }
 
+async function setSourceEnabled(source, enabled) {
+  await store.set_notification_source_enabled(source.package_name, enabled)
+}
+
+async function toggleCalendarSync() {
+  await store.set_calendar_sync_enabled(!store.calendar_sync_enabled)
+}
+
 onMounted(async () => {
   window.handleNativeSniff = handleNativeSniff
   backendAddress.value = apiService.get_api_base_url()
-  clockTimer = window.setInterval(() => { now.value = Date.now() }, 30000)
+  clockTimer = window.setInterval(() => {
+    now.value = Date.now()
+    store.wake_due_candidates()
+  }, 30000)
   await store.fetch_latest_tasks()
+  store.wake_due_candidates()
   await store.initialize_local_notifications()
   await store.initialize_system_notification_listener()
+  await store.initialize_calendar_sync()
+  notificationActionHandle = await notificationService.addActionListener(event => {
+    if (event?.notification?.extra?.type === 'candidate_snooze') {
+      store.wake_due_candidates()
+      switchView('candidates')
+    }
+  })
   document.addEventListener('visibilitychange', handleVisibilityChange)
   store.connect_web_socket()
   store._start_poll()
@@ -346,6 +408,7 @@ onUnmounted(() => {
   if (clockTimer) window.clearInterval(clockTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   void store.dispose_system_notification_listener()
+  if (notificationActionHandle) void notificationActionHandle.remove()
   store.disconnect_web_socket()
 })
 </script>
@@ -366,5 +429,6 @@ onUnmounted(() => {
 .bottom-nav button { display: flex; min-width: 3.6rem; flex-direction: column; align-items: center; gap: .25rem; color: #737783; font-size: .68rem; transition: color .2s; }
 .bottom-nav button:hover, .bottom-nav button.active { color: #4c8dff; }
 .bottom-nav svg { width: 1.35rem; height: 1.35rem; stroke-width: 1.7; }
+.nav-badge { position: absolute; top: -.18rem; right: .22rem; min-width: 1rem; height: 1rem; padding: 0 .2rem; border-radius: 999px; color: white; background: #2563eb; font-size: .58rem; line-height: 1rem; }
 @media (min-width: 768px) { .bottom-nav { bottom: 1.5rem; } }
 </style>

@@ -1,5 +1,6 @@
 package com.example.schedulehunter;
 
+import android.content.Context;
 import android.content.Intent;
 import android.provider.Settings;
 
@@ -96,6 +97,32 @@ public class SystemNotificationPlugin extends Plugin {
         call.resolve(result);
     }
 
+    @PluginMethod
+    public void getSources(PluginCall call) {
+        JSObject result = new JSObject();
+        try {
+            result.put("sources", new JSArray(NotificationCaptureStore.getSources(getContext()).toString()));
+            call.resolve(result);
+        } catch (JSONException error) {
+            call.reject("读取通知来源失败", error);
+        }
+    }
+
+    @PluginMethod
+    public void setSourceEnabled(PluginCall call) {
+        String packageName = call.getString("packageName", "");
+        if (packageName.isEmpty()) {
+            call.reject("缺少应用包名");
+            return;
+        }
+        Boolean enabled = call.getBoolean("enabled", true);
+        NotificationCaptureStore.setSourceAllowed(getContext(), packageName, Boolean.TRUE.equals(enabled));
+        JSObject result = new JSObject();
+        result.put("package_name", packageName);
+        result.put("enabled", Boolean.TRUE.equals(enabled));
+        call.resolve(result);
+    }
+
     static void dispatchCaptured(JSONObject event) {
         SystemNotificationPlugin instance = activeInstance;
         if (instance == null || instance.getActivity() == null) return;
@@ -112,5 +139,32 @@ public class SystemNotificationPlugin extends Plugin {
 
     static void setAppForeground(boolean foreground) {
         appForeground = foreground;
+    }
+
+    static void handleShareIntent(Context context, Intent intent) {
+        if (intent == null || !Intent.ACTION_SEND.equals(intent.getAction()) || !"text/plain".equals(intent.getType())) return;
+        CharSequence shared = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        String sourceText = shared == null ? "" : shared.toString().trim();
+        if (sourceText.isEmpty() || NotificationCaptureStore.containsSensitiveContent(sourceText)) return;
+
+        long capturedAt = System.currentTimeMillis();
+        JSONObject event = new JSONObject();
+        try {
+            String signature = NotificationCaptureStore.sha256("intent|" + sourceText);
+            event.put("event_id", NotificationCaptureStore.sha256(signature + "|" + capturedAt));
+            event.put("package_name", "android.intent.action.SEND");
+            event.put("app_name", "分享内容");
+            event.put("input_type", "intent");
+            event.put("posted_at", capturedAt);
+            event.put("captured_at", capturedAt);
+            event.put("title", "分享给日程猎人");
+            event.put("text", sourceText);
+            event.put("source_text", sourceText);
+        } catch (JSONException ignored) {
+            return;
+        }
+        NotificationCaptureStore.enqueue(context, event);
+        dispatchCaptured(event);
+        intent.removeExtra(Intent.EXTRA_TEXT);
     }
 }

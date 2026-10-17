@@ -32,7 +32,7 @@ export function is_native_app() {
   return Capacitor.isNativePlatform()
 }
 
-function generate_request_id() {
+export function generate_request_id() {
   const now = new Date()
   const date_str = now.toISOString().slice(0, 10).replace(/-/g, '')
   const random = Math.random().toString(36).substr(2, 6)
@@ -245,7 +245,88 @@ export async function update_task(task_id, task_data) {
   try {
     const data = await request(`/api/v1/tasks/${task_id}`, {
       method: 'PUT',
-      body: JSON.stringify(task_data)
+      body: JSON.stringify({ request_id: generate_request_id(), ...task_data })
+    })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function fetch_task(task_id) {
+  try {
+    const data = await request(`/api/v1/tasks/${task_id}`, { method: 'GET' })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function create_candidate(candidate) {
+  try {
+    const data = await request('/api/v1/candidates', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: candidate.request_id || generate_request_id(), ...candidate })
+    })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function fetch_candidates(status = '') {
+  const params = new URLSearchParams()
+  if (status) params.set('status', status)
+  const query = params.toString()
+  try {
+    const data = await request(`/api/v1/candidates${query ? `?${query}` : ''}`, { method: 'GET' })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function update_candidate(candidate_id, changes) {
+  try {
+    const data = await request(`/api/v1/candidates/${candidate_id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ request_id: generate_request_id(), ...changes })
+    })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function confirm_candidate(candidate_id) {
+  try {
+    const data = await request(`/api/v1/candidates/${candidate_id}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ request_id: generate_request_id() })
+    })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function snooze_candidate(candidate_id, options = {}) {
+  try {
+    const data = await request(`/api/v1/candidates/${candidate_id}/snooze`, {
+      method: 'POST',
+      body: JSON.stringify({ request_id: generate_request_id(), ...options })
+    })
+    return { success: true, data }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+}
+
+export async function find_free_slots(options) {
+  try {
+    const data = await request('/api/v1/tasks/free-slots', {
+      method: 'POST',
+      body: JSON.stringify({ request_id: generate_request_id(), ...options })
     })
     return { success: true, data }
   } catch (error) {

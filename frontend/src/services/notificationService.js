@@ -21,6 +21,10 @@ function notificationId(taskId, offset) {
   return result || 1
 }
 
+function candidateNotificationId(candidateId) {
+  return notificationId(`candidate:${candidateId}`, 0)
+}
+
 function readRegistry() {
   try {
     return JSON.parse(localStorage.getItem(REGISTRY_KEY) || '{}')
@@ -58,7 +62,7 @@ function makeNotifications(task, exactAlarmGranted) {
       foreground: true,
       isExactNotification: exactAlarmGranted,
       isExactMandatory: false,
-      extra: { owner: OWNER, task_id: taskId, offset_minutes: offset }
+      extra: { owner: OWNER, type: 'task', task_id: taskId, offset_minutes: offset }
     }
   }).filter(Boolean)
 }
@@ -129,13 +133,45 @@ export async function rebuildTask(task) {
   return scheduleTask(task)
 }
 
+export async function scheduleCandidateSnooze(candidate, minutes) {
+  if (!isSupported()) return { supported: false, scheduled: 0 }
+  const permission = await getPermissionState()
+  if (permission.display !== 'granted') return { ...permission, scheduled: 0 }
+  const candidateId = String(candidate?.candidate_id || '')
+  if (!candidateId) return { ...permission, scheduled: 0 }
+  const id = candidateNotificationId(candidateId)
+  await LocalNotifications.cancel({ notifications: [{ id }] }).catch(() => {})
+  await LocalNotifications.schedule({
+    notifications: [{
+      id,
+      title: `候选日程：${candidate.parsed?.title || '待确认日程'}`,
+      body: '稍后提醒时间已到，点击查看并确认',
+      schedule: { at: new Date(Date.now() + Math.max(1, Number(minutes) || 10) * 60_000), allowWhileIdle: true },
+      foreground: true,
+      extra: { owner: OWNER, type: 'candidate_snooze', candidate_id: candidateId }
+    }]
+  })
+  return { ...permission, scheduled: 1 }
+}
+
+export async function cancelCandidateSnooze(candidateId) {
+  if (!isSupported() || !candidateId) return { supported: isSupported(), cancelled: 0 }
+  await LocalNotifications.cancel({ notifications: [{ id: candidateNotificationId(String(candidateId)) }] }).catch(() => {})
+  return { supported: true, cancelled: 1 }
+}
+
+export async function addActionListener(callback) {
+  if (!isSupported()) return null
+  return LocalNotifications.addListener('localNotificationActionPerformed', callback)
+}
+
 export async function reconcileTasks(tasks = []) {
   if (!isSupported()) return { supported: false, scheduled: 0, cancelled: 0 }
   const permission = await getPermissionState()
   if (permission.display !== 'granted') return { ...permission, scheduled: 0, cancelled: 0 }
 
   const pending = await LocalNotifications.getPending()
-  const owned = (pending.notifications || []).filter(item => item.extra?.owner === OWNER)
+  const owned = (pending.notifications || []).filter(item => item.extra?.owner === OWNER && item.extra?.type !== 'candidate_snooze')
   await cancelDescriptors(owned)
 
   const byId = new Map()

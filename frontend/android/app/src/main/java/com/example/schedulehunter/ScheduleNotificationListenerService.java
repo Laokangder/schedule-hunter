@@ -19,6 +19,11 @@ public class ScheduleNotificationListenerService extends NotificationListenerSer
         if (statusBarNotification == null || !NotificationCaptureStore.isEnabled(this)) return;
         if (getPackageName().equals(statusBarNotification.getPackageName())) return;
 
+        String packageName = statusBarNotification.getPackageName();
+        String appName = resolveAppName(packageName);
+        NotificationCaptureStore.recordSource(this, packageName, appName);
+        if (!NotificationCaptureStore.isSourceAllowed(this, packageName)) return;
+
         Notification notification = statusBarNotification.getNotification();
         if (notification == null || shouldIgnore(notification)) return;
 
@@ -34,7 +39,7 @@ public class ScheduleNotificationListenerService extends NotificationListenerSer
 
         long capturedAt = System.currentTimeMillis();
         String signature = NotificationCaptureStore.sha256(
-            statusBarNotification.getPackageName() + "|" + statusBarNotification.getKey() + "|" + sourceText
+            packageName + "|" + statusBarNotification.getKey() + "|" + sourceText
         );
         if (!NotificationCaptureStore.shouldCapture(this, signature, capturedAt)) return;
 
@@ -42,8 +47,9 @@ public class ScheduleNotificationListenerService extends NotificationListenerSer
         try {
             event.put("event_id", NotificationCaptureStore.sha256(signature + "|" + capturedAt));
             event.put("notification_key", statusBarNotification.getKey());
-            event.put("package_name", statusBarNotification.getPackageName());
-            event.put("app_name", resolveAppName(statusBarNotification.getPackageName()));
+            event.put("package_name", packageName);
+            event.put("app_name", appName);
+            event.put("input_type", "notification");
             event.put("posted_at", statusBarNotification.getPostTime());
             event.put("captured_at", capturedAt);
             event.put("title", title);
