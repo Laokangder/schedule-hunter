@@ -20,8 +20,8 @@
           <button type="button" class="text-xs text-neutral-500 hover:text-white" @click="store.select_candidate(candidate)">查看</button>
         </div>
 
-        <div v-if="candidate.changes?.length" class="mt-4 rounded-xl bg-amber-500/[0.06] p-3 text-xs text-amber-200/80">
-          <p v-for="(change, index) in candidate.changes" :key="index">
+        <div v-if="changeEntries(candidate).length" class="mt-4 rounded-xl bg-amber-500/[0.06] p-3 text-xs text-amber-200/80">
+          <p v-for="(change, index) in changeEntries(candidate)" :key="index">
             {{ change.field || '字段' }}：{{ change.from || '未设置' }} → {{ change.to || change.value || '未设置' }}
           </p>
         </div>
@@ -98,14 +98,14 @@ function beginEdit(candidate) {
   draft.location = candidate.parsed?.location || ''
 }
 
-function saveEdit(candidate) {
-  store.edit_candidate(candidate.candidate_id, {
+async function saveEdit(candidate) {
+  const saved = await store.edit_candidate(candidate.candidate_id, {
     title: draft.title.trim(),
     start_time: draft.start_time ? new Date(draft.start_time).toISOString() : candidate.parsed?.start_time,
     end_time: draft.end_time ? new Date(draft.end_time).toISOString() : candidate.parsed?.end_time,
     location: draft.location.trim()
   })
-  editingId.value = null
+  if (saved) editingId.value = null
 }
 
 async function confirmCandidate(candidate) {
@@ -120,9 +120,18 @@ async function findSlots(candidate) {
   await store.request_free_slots(candidate.parsed)
 }
 
-function applySlot(candidate, slot) {
-  store.edit_candidate(candidate.candidate_id, { start_time: slot.start_time, end_time: slot.end_time })
-  slotCandidateId.value = null
+async function applySlot(candidate, slot) {
+  const saved = await store.edit_candidate(candidate.candidate_id, { start_time: slot.start_time, end_time: slot.end_time })
+  if (saved) slotCandidateId.value = null
+}
+
+function changeEntries(candidate) {
+  const changes = candidate?.changes
+  if (Array.isArray(changes)) return changes
+  return Object.entries(changes || {}).map(([field, value]) => {
+    if (value && typeof value === 'object') return { field, ...value }
+    return { field, to: value }
+  })
 }
 
 function kindLabel(value) {

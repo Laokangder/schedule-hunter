@@ -331,6 +331,7 @@ async function saveBackendAddress() {
     store.connect_web_socket()
     store._start_poll()
     await store.fetch_latest_tasks()
+    await store.refresh_candidates()
   } else {
     backendStatus.value = { success: false, message: `连接失败：${result.error}` }
   }
@@ -388,6 +389,7 @@ onMounted(async () => {
     store.wake_due_candidates()
   }, 30000)
   await store.fetch_latest_tasks()
+  await store.refresh_candidates()
   store.wake_due_candidates()
   await store.initialize_local_notifications()
   await store.initialize_system_notification_listener()

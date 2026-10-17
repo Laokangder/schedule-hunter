@@ -125,13 +125,13 @@
 - [x] 展示智能空档建议并允许一键回填候选时间。
 - [x] 接入 Android 系统日历权限、创建、更新和删除同步。
 - [x] 验证前端生产构建和 Android Java 编译，不生成 debug APK。
-- [ ] 完成合并后 API 契约联调和回归测试。
+- [x] 完成合并后的候选 API 契约接线和自动化回归验证。
 
 ## 八、测试结果与联合验收
 
 后端自动化测试：2026-10-17 使用 `python -B -m unittest discover -s tests -v` 执行，14 项全部通过。覆盖任务查询/部分更新、非法时间与不存在、提醒重置、候选 CRUD、请求幂等、相似合并、终态不重开、三类 snooze 与一次性到期查询、创建/更新/取消确认、低置信度不直接执行、空档缓冲与跨日期边界、旧数据库无损升级，以及原有流程回归。
 
-客户端静态验证：前端生产构建、Capacitor Android 同步和 `:app:compileDebugJavaWithJavac` 已通过；未生成 debug APK。
+客户端静态验证：前端生产构建、Capacitor Android 同步和 `:app:compileDebugJavaWithJavac` 已通过；未生成 debug APK。候选的创建/合并、启动同步、编辑、忽略、确认和 snooze 已接入后端；后台通知解析会先持久化服务端候选，通知快捷动作会同步候选状态。
 
 以下联合验收仍未完成，因此保持未勾选：
 

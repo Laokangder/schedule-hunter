@@ -39,6 +39,7 @@ public class CandidateActionReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_IGNORE.equals(action)) {
+            BackgroundCandidateProcessor.syncCandidateAction(context, eventId, "ignored", 0);
             NotificationCaptureStore.acknowledge(context, new JSONArray().put(eventId));
             if (manager != null) manager.cancel(notificationId);
             return;
@@ -46,6 +47,7 @@ public class CandidateActionReceiver extends BroadcastReceiver {
 
         if (ACTION_SNOOZE.equals(action)) {
             long delayMinutes = Math.max(1, intent.getIntExtra(EXTRA_DELAY_MINUTES, 10));
+            BackgroundCandidateProcessor.syncCandidateAction(context, eventId, "snooze", (int) delayMinutes);
             long triggerAt = System.currentTimeMillis() + delayMinutes * 60_000L;
             NotificationCaptureStore.markSnoozed(context, eventId, triggerAt);
             if (manager != null) manager.cancel(notificationId);

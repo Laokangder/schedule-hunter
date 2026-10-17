@@ -76,6 +76,8 @@ final class BackgroundCandidateProcessor {
                 return;
             }
 
+            persistCandidate(context, event, response);
+
             JSONObject updatedEvent = NotificationCaptureStore.attachParsedResponse(context, eventId, response);
             if (updatedEvent == null) return;
 
@@ -106,11 +108,111 @@ final class BackgroundCandidateProcessor {
         meta.put("app_version", "1.0.0");
 
         JSONObject body = new JSONObject();
-        body.put("request_id", "notification_" + eventId.substring(0, Math.min(16, eventId.length())));
+        body.put("request_id", candidateRequestId(eventId));
         body.put("source_text", sourceText);
         body.put("context", context);
         body.put("meta", meta);
         return body;
+    }
+
+    private static void persistCandidate(Context context, JSONObject event, JSONObject parseResponse) {
+        try {
+            String backendUrl = NotificationCaptureStore.getBackendUrl(context);
+            JSONObject data = parseResponse.optJSONObject("data");
+            JSONObject parsed = data == null ? null : data.optJSONObject("parsed");
+            if (backendUrl.isEmpty() || data == null || parsed == null) return;
+
+            String eventId = event.optString("event_id", "");
+            JSONObject body = new JSONObject();
+            body.put("request_id", candidateRequestId(eventId));
+            body.put("source_type", event.optString("input_type", "notification"));
+            body.put("source_package", event.optString("package_name", ""));
+            body.put("source_app_name", event.optString("app_name", ""));
+            body.put("source_text", event.optString("source_text", ""));
+            body.put("parsed", parsed);
+            body.put("intent_type", data.optString("intent_type", "create"));
+            if (!data.optString("target_task_id", "").isEmpty()) {
+                body.put("target_task_id", data.optString("target_task_id"));
+            }
+            body.put("changes", data.optJSONObject("changes") == null ? new JSONObject() : data.optJSONObject("changes"));
+            body.put("confidence", parsed.optDouble("confidence", 0.0));
+            body.put("match_confidence", data.optDouble("match_confidence", 0.0));
+
+            JSONObject envelope = sendJson(backendUrl + "/api/v1/candidates", "POST", body);
+            JSONObject result = envelope.optJSONObject("data");
+            JSONObject candidate = result == null ? null : result.optJSONObject("candidate");
+            if (envelope.optInt("code", -1) == 0 && candidate != null) {
+                data.put("candidate_id", candidate.optString("candidate_id", ""));
+                data.put("request_id", candidate.optString("request_id", candidateRequestId(eventId)));
+                data.put("intent_type", candidate.optString("intent_type", data.optString("intent_type", "create")));
+                data.put("target_task_id", candidate.opt("target_task_id"));
+                data.put("changes", candidate.optJSONObject("changes") == null ? new JSONObject() : candidate.optJSONObject("changes"));
+                data.put("match_confidence", candidate.optDouble("match_confidence", data.optDouble("match_confidence", 0.0)));
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "Background candidate persistence failed: " + error.getClass().getSimpleName());
+        }
+    }
+
+    static void syncCandidateAction(Context context, String eventId, String action, int delayMinutes) {
+        Context appContext = context.getApplicationContext();
+        JSONObject event = NotificationCaptureStore.getEvent(appContext, eventId);
+        JSONObject parseResponse = event == null ? null : event.optJSONObject("parsed_response");
+        JSONObject data = parseResponse == null ? null : parseResponse.optJSONObject("data");
+        String candidateId = data == null ? "" : data.optString("candidate_id", "");
+        String backendUrl = NotificationCaptureStore.getBackendUrl(appContext);
+        if (candidateId.isEmpty() || backendUrl.isEmpty()) return;
+
+        EXECUTOR.execute(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("request_id", "native_action_" + action + "_" + delayMinutes + "_" + eventId);
+                String path;
+                String method;
+                if ("ignored".equals(action)) {
+                    body.put("status", "ignored");
+                    path = "/api/v1/candidates/" + candidateId;
+                    method = "PATCH";
+                } else if ("snooze".equals(action)) {
+                    body.put("duration_minutes", delayMinutes == 60 ? 60 : 10);
+                    path = "/api/v1/candidates/" + candidateId + "/snooze";
+                    method = "POST";
+                } else {
+                    return;
+                }
+                sendJson(backendUrl + path, method, body);
+            } catch (Exception error) {
+                Log.w(TAG, "Candidate action sync failed: " + error.getClass().getSimpleName());
+            }
+        });
+    }
+
+    private static String candidateRequestId(String eventId) {
+        return "notification_" + eventId.substring(0, Math.min(16, eventId.length()));
+    }
+
+    private static JSONObject sendJson(String target, String method, JSONObject body) throws Exception {
+        HttpURLConnection request = null;
+        try {
+            request = (HttpURLConnection) new URL(target).openConnection();
+            request.setRequestMethod(method);
+            request.setConnectTimeout(10_000);
+            request.setReadTimeout(20_000);
+            request.setDoOutput(true);
+            request.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            try (OutputStream output = request.getOutputStream()) {
+                output.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            int status = request.getResponseCode();
+            InputStream stream = status >= 200 && status < 300 ? request.getInputStream() : request.getErrorStream();
+            String response = readStream(stream);
+            if (status < 200 || status >= 300 || response.isEmpty()) {
+                throw new IllegalStateException("HTTP " + status);
+            }
+            return new JSONObject(response);
+        } finally {
+            if (request != null) request.disconnect();
+        }
     }
 
     private static String isoTimestamp() {
