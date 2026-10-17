@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Request, HTTPException
 from typing import Optional
 from pydantic import BaseModel
-from src.models.request import ParseTaskRequest, CreateTaskRequest, ConflictCheckRequest
+from src.models.request import ParseTaskRequest, CreateTaskRequest, ConflictCheckRequest, UpdateTaskRequest, FreeSlotsRequest
 from src.models.response import BaseResponse, ParseTaskResponseData, CreateTaskResponseData, ConflictCheckResponseData, \
     TaskListResponseData, ConflictItem, Suggestion, Ambiguity
 from src.services.parse_service import ParseService
 from src.services.task_service import TaskService
 from src.services.conflict_service import ConflictService
+from src.services.change_hunter_service import ChangeHunterService
+from src.services.free_slot_service import FreeSlotService
 from src.core.logger import get_logger, log_with_trace
 import traceback
 
@@ -16,6 +18,8 @@ logger = get_logger("task_api")
 parse_service = ParseService()
 task_service = TaskService()
 conflict_service = ConflictService()
+change_hunter_service = ChangeHunterService()
+free_slot_service = FreeSlotService()
 
 
 class UpdateStatusRequest(BaseModel):
@@ -53,6 +57,7 @@ async def parse_task(request: Request, body: ParseTaskRequest):
             )
 
         suggestion_objs = [Suggestion(**s) for s in suggestions]
+        change_analysis = change_hunter_service.analyze(body.source_text, parsed_data)
 
         raw_ambiguities = parsed_data.get("ambiguities", [])
         processed_ambiguities = []
@@ -71,7 +76,11 @@ async def parse_task(request: Request, body: ParseTaskRequest):
             suggestions=suggestion_objs,
             needs_confirmation=parsed_data.get("confidence", 0) < 0.6 or ai_fallback,
             ambiguities=processed_ambiguities,
-            ai_fallback=ai_fallback
+            ai_fallback=ai_fallback,
+            intent_type=change_analysis["intent_type"],
+            target_task_id=change_analysis["target_task_id"],
+            changes=change_analysis["changes"],
+            match_confidence=change_analysis["match_confidence"],
         )
 
         return BaseResponse(
@@ -106,6 +115,8 @@ async def create_task(request: Request, body: CreateTaskRequest):
         )
 
     except ValueError as e:
+        if "2001" in str(e):
+            return BaseResponse(code=2001, message="时间非法", data={}, trace_id=trace_id)
         if "3001" in str(e):
             return BaseResponse(code=3001, message="任务写入失败", data={}, trace_id=trace_id)
         raise HTTPException(status_code=400, detail=str(e))
@@ -131,6 +142,44 @@ async def get_tasks(request: Request, date: Optional[str] = None, status: Option
     except Exception as e:
         log_with_trace(logger, "ERROR", f"查询任务异常：{repr(e)}", trace_id)
         return BaseResponse(code=5000, message="服务器内部错误", data={}, trace_id=trace_id)
+
+
+@router.get("/api/v1/tasks/{task_id}")
+async def get_task(request: Request, task_id: str):
+    trace_id = request.state.trace_id
+    task = task_service.get_task(task_id)
+    if not task:
+        return BaseResponse(code=4001, message="任务不存在", data={}, trace_id=trace_id)
+    return BaseResponse(code=0, message="ok", data=task, trace_id=trace_id)
+
+
+@router.put("/api/v1/tasks/{task_id}")
+async def update_task(request: Request, task_id: str, body: UpdateTaskRequest):
+    trace_id = request.state.trace_id
+    try:
+        task = task_service.update_task(task_id, body, trace_id)
+        if not task:
+            return BaseResponse(code=4001, message="任务不存在", data={}, trace_id=trace_id)
+        if not task.get("idempotent"):
+            from src.api.v1.websocket import broadcast_task_update
+            await broadcast_task_update(task_id, "updated")
+        return BaseResponse(code=0, message="updated", data=task, trace_id=trace_id)
+    except ValueError as exc:
+        if "2001" in str(exc):
+            return BaseResponse(code=2001, message="时间非法", data={}, trace_id=trace_id)
+        return BaseResponse(code=5000, message="任务更新失败", data={}, trace_id=trace_id)
+
+
+@router.post("/api/v1/tasks/free-slots")
+async def find_free_slots(request: Request, body: FreeSlotsRequest):
+    trace_id = request.state.trace_id
+    try:
+        result = free_slot_service.scan(body)
+        return BaseResponse(code=0, message="ok", data=result, trace_id=trace_id)
+    except ValueError as exc:
+        if "2001" in str(exc):
+            return BaseResponse(code=2001, message="时间非法", data={}, trace_id=trace_id)
+        return BaseResponse(code=5000, message="空档计算失败", data={}, trace_id=trace_id)
 
 
 @router.post("/api/v1/tasks/conflict-check")

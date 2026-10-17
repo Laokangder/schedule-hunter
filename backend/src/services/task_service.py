@@ -1,8 +1,10 @@
 from src.db.task_repo import TaskRepository
-from src.models.request import CreateTaskRequest
+from src.models.request import CreateTaskRequest, UpdateTaskRequest
+from src.db.idempotency_repo import IdempotencyRepository
 from src.core.logger import get_logger, log_with_trace
 from typing import List, Dict, Optional
 import uuid
+from datetime import datetime, timezone
 
 logger = get_logger("task_service")
 
@@ -10,6 +12,7 @@ logger = get_logger("task_service")
 class TaskService:
     def __init__(self):
         self.task_repo = TaskRepository()
+        self.idempotency_repo = IdempotencyRepository()
 
     def create_task(self, request: CreateTaskRequest, trace_id: str) -> Dict:
         request_id = getattr(request, 'request_id', None)
@@ -27,6 +30,14 @@ class TaskService:
                     "is_conflict": False,
                     "idempotent": True
                 }
+
+        try:
+            if self._parse_datetime(request.parsed.end_time) <= self._parse_datetime(request.parsed.start_time):
+                raise ValueError("时间非法（错误码2001）")
+        except (TypeError, ValueError) as exc:
+            if "2001" in str(exc):
+                raise
+            raise ValueError("时间非法（错误码2001）") from exc
 
         try:
             task_id = f"task_{uuid.uuid4().hex[:6]}"
@@ -79,6 +90,51 @@ class TaskService:
         except Exception as e:
             log_with_trace(logger, "ERROR", f"查询任务失败：{str(e)}", trace_id)
             raise ValueError("任务查询失败")
+
+    def get_task(self, task_id: str) -> Optional[Dict]:
+        return self.task_repo.get_task_by_id(task_id)
+
+    @staticmethod
+    def _parse_datetime(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+    def update_task(self, task_id: str, request: UpdateTaskRequest, trace_id: str) -> Optional[Dict]:
+        operation = f"task.update:{task_id}"
+        cached = self.idempotency_repo.get(request.request_id, operation)
+        if cached is not None:
+            result = dict(cached)
+            result["idempotent"] = True
+            return result
+
+        existing = self.task_repo.get_task_by_id(task_id)
+        if not existing:
+            return None
+
+        updates = request.model_dump(exclude_none=True, exclude={"request_id"})
+        if "reminder_policy" in updates and hasattr(updates["reminder_policy"], "model_dump"):
+            updates["reminder_policy"] = updates["reminder_policy"].model_dump()
+
+        start_time = updates.get("start_time", existing["start_time"])
+        end_time = updates.get("end_time", existing["end_time"])
+        try:
+            if self._parse_datetime(end_time) <= self._parse_datetime(start_time):
+                raise ValueError("时间非法（错误码2001）")
+        except (TypeError, ValueError) as exc:
+            if "2001" in str(exc):
+                raise
+            raise ValueError("时间非法（错误码2001）") from exc
+
+        reset_reminders = any(
+            key in updates and updates[key] != existing.get(key)
+            for key in ("start_time", "end_time", "reminder_policy")
+        )
+        updated = self.task_repo.update_task(task_id, updates, reset_reminders=reset_reminders)
+        if updated is not None:
+            updated = {**updated, "idempotent": False}
+            self.idempotency_repo.save(request.request_id, operation, updated)
+            log_with_trace(logger, "INFO", f"任务更新成功：{task_id}", trace_id)
+        return updated
 
     def _get_island_state(self, tasks: List[Dict]) -> Dict:
         if not tasks:

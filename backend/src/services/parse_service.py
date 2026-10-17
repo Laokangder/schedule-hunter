@@ -79,7 +79,7 @@ class ParseService:
             log_with_trace(
                 logger,
                 "INFO",
-                f"RULE_APPLIED input={source_text!r} before={before!r} after={result!r}",
+                "RULE_APPLIED",
                 trace_id,
             )
         return result
@@ -155,7 +155,7 @@ class ParseService:
             log_with_trace(
                 logger,
                 "WARNING",
-                f"REGEX_FALLBACK input={request.source_text!r} llm_result={llm_result!r}",
+                "REGEX_FALLBACK",
                 trace_id,
             )
             llm_result = self.fallback_parse(request.source_text, trace_id)
@@ -163,7 +163,7 @@ class ParseService:
             log_with_trace(
                 logger,
                 "INFO",
-                f"LLM_ACCEPTED input={request.source_text!r} result={llm_result!r}",
+                f"LLM_ACCEPTED confidence={llm_result.get('confidence', 0)}",
                 trace_id,
             )
 
@@ -200,7 +200,7 @@ class ParseService:
         log_with_trace(
             logger,
             "INFO",
-            f"RULE_NORMALIZED input={request.source_text!r} result={llm_result!r}",
+            f"RULE_NORMALIZED confidence={llm_result.get('confidence', 0)}",
             trace_id,
         )
 

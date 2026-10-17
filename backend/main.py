@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.v1.task import router as task_router
 from src.api.v1.websocket import router as websocket_router
+from src.api.v1.candidate import router as candidate_router
 from src.core.logger import TraceIDMiddleware, get_logger
 from src.core.config import settings
 from src.services.reminder_service import start_reminder_scheduler, stop_reminder_scheduler
@@ -30,6 +31,7 @@ app.add_middleware(
 app.add_middleware(TraceIDMiddleware)
 
 app.include_router(task_router)
+app.include_router(candidate_router)
 app.include_router(websocket_router)
 
 

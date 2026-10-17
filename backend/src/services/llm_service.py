@@ -24,17 +24,17 @@ class LLMService:
             log_with_trace(
                 logger,
                 "INFO",
-                f"LLM_PARSED input={source_text!r} result={json.dumps(result, ensure_ascii=False)}",
+                f"LLM_PARSED confidence={result.get('confidence', 0)}",
                 trace_id,
             )
             return result
         except TimeoutError:
-            log_with_trace(logger, "WARNING", f"LLM_TIMEOUT input={source_text[:50]!r}", trace_id)
+            log_with_trace(logger, "WARNING", "LLM_TIMEOUT", trace_id)
             result = self._fallback_parse(source_text)
             result["ai_fallback"] = True
             return result
         except Exception as e:
-            log_with_trace(logger, "ERROR", f"LLM_ERROR input={source_text[:50]!r} error={str(e)}", trace_id)
+            log_with_trace(logger, "ERROR", f"LLM_ERROR type={type(e).__name__}", trace_id)
             result = self._fallback_parse(source_text)
             result["ai_fallback"] = True
             return result
@@ -123,12 +123,6 @@ class LLMService:
             f"model={self.model!r} finish_reason={choice.get('finish_reason')!r} "
             f"content_chars={len(raw_content)} reasoning_chars={len(reasoning_content)} "
             f"usage={data.get('usage', {})!r}",
-            trace_id,
-        )
-        log_with_trace(
-            logger,
-            "INFO",
-            f"LLM_RAW model={self.model!r} content={raw_content[:2000]!r}",
             trace_id,
         )
         raw_content = re.sub(r'^```json\s*', '', raw_content, flags=re.DOTALL)

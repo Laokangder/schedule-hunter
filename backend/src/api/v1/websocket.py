@@ -56,7 +56,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            logger.info(f"收到客户端消息: {data}")
+            logger.info(f"收到客户端消息，长度={len(data)}")
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket, client_id)
 

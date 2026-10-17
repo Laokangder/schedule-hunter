@@ -38,6 +38,10 @@ class ParseTaskResponseData(BaseModel):
     needs_confirmation: bool = False
     ambiguities: List[Ambiguity] = []
     ai_fallback: bool = False
+    intent_type: str = "create"
+    target_task_id: Optional[str] = None
+    changes: Dict[str, Any] = {}
+    match_confidence: float = 0.0
 
 
 class CreateTaskResponseData(BaseModel):

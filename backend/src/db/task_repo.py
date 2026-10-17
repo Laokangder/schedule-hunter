@@ -107,6 +107,62 @@ class TaskRepository:
         finally:
             conn.close()
 
+    @staticmethod
+    def _deserialize_task(row) -> Optional[Dict]:
+        if not row:
+            return None
+        task = dict(row)
+        task["participants"] = json.loads(task.get("participants") or "[]")
+        task["reminder_policy"] = json.loads(task.get("reminder_policy") or "{}")
+        return task
+
+    def get_task_by_id(self, task_id: str) -> Optional[Dict]:
+        conn = self.db.get_connection()
+        try:
+            row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            return self._deserialize_task(row)
+        finally:
+            conn.close()
+
+    def get_all_tasks(self) -> List[Dict]:
+        conn = self.db.get_connection()
+        try:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY start_time ASC").fetchall()
+            return [self._deserialize_task(row) for row in rows]
+        finally:
+            conn.close()
+
+    def update_task(self, task_id: str, updates: Dict, reset_reminders: bool = False) -> Optional[Dict]:
+        allowed = {
+            "title", "start_time", "end_time", "location", "participants",
+            "priority", "reminder_policy", "status",
+        }
+        values = {key: value for key, value in updates.items() if key in allowed}
+        if "participants" in values:
+            values["participants"] = json.dumps(values["participants"], ensure_ascii=False)
+        if "reminder_policy" in values:
+            values["reminder_policy"] = json.dumps(values["reminder_policy"], ensure_ascii=False)
+        if reset_reminders:
+            values["reminded_offsets"] = "[]"
+            values["is_reminded"] = 0
+        values["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        conn = self.db.get_connection()
+        try:
+            if not conn.execute("SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)).fetchone():
+                return None
+            assignments = ", ".join(f"{column} = ?" for column in values)
+            params = list(values.values()) + [task_id]
+            conn.execute(f"UPDATE tasks SET {assignments} WHERE task_id = ?", params)
+            conn.commit()
+            row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            return self._deserialize_task(row)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def get_pending_reminders(self, minutes_threshold: int = 30) -> List[Dict]:
         conn = self.db.get_connection()
         cursor = conn.cursor()
